@@ -1,0 +1,9 @@
+[package]
+name = "spaceball-rs"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+# deku = "0.20.3"
+pretty-hex = "0.4.2"
+serialport = "4"
