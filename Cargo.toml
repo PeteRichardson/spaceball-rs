@@ -7,3 +7,6 @@ edition = "2024"
 # deku = "0.20.3"
 pretty-hex = "0.4.2"
 serialport = "4"
+
+[dev-dependencies]
+three-d = { version = "0.17", features = ["egui-gui"] }
