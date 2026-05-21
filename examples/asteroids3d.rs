@@ -19,14 +19,22 @@
 //! Asteroid field.
 //!
 //! Placeholder spheres become proper Asteroid entities carrying a radius field
-//! (needed for collision in Stage 5).  Spawning is extracted into
+//! (needed for collision in Stage 6).  Spawning is extracted into
 //! spawn_asteroid_field so later stages can refill the field as the player
 //! moves.  A HUD overlay shows the live asteroid count.
+//!
+//! ── Stage 4 ─────────────────────────────────────────────────────────────────
+//! Asteroid visual character.
+//!
+//! Each asteroid gets a unique procedurally-generated lumpy mesh: a sphere with
+//! vertices randomly perturbed along their radial direction.  Flat normals give
+//! the surface a faceted, rock-like appearance.
 //! ────────────────────────────────────────────────────────────────────────────
 
 use std::sync::{Arc, Mutex};
 
 use bevy::prelude::*;
+use bevy::render::mesh::VertexAttributeValues;
 use rand::{Rng, SeedableRng, rngs::SmallRng};
 use spaceball_rs::{Packet, Spaceball};
 
@@ -41,6 +49,8 @@ const ASTEROID_COUNT: usize = 20;
 /// Asteroids are spawned in a shell at this distance range from the player.
 const ASTEROID_MIN_DIST: f32 = 20.0;
 const ASTEROID_MAX_DIST: f32 = 80.0;
+/// Number of background stars.
+const STAR_COUNT: usize = 600;
 
 // ── Components ───────────────────────────────────────────────────────────────
 
@@ -140,6 +150,7 @@ fn main() {
             }),
             ..default()
         }))
+        .insert_resource(ClearColor(Color::BLACK))
         .insert_resource(Player(player_state))
         .add_systems(Startup, setup)
         .add_systems(Update, (update_camera, update_hud))
@@ -170,15 +181,42 @@ fn setup(
         Transform::from_rotation(Quat::from_euler(EulerRot::XYZ, -0.5, 0.5, 0.0)),
     ));
 
+    // ── Star field ─────────────────────────────────────────────────────────────
+    // Stars are tiny emissive spheres placed very far away so they appear fixed.
+    let star_mesh = meshes.add(Sphere::new(1.0));
+    let star_mat = materials.add(StandardMaterial {
+        emissive: LinearRgba::new(4.0, 4.2, 5.0, 1.0), // cool blue-white glow
+        ..default()
+    });
+    let mut star_rng = SmallRng::seed_from_u64(7);
+    for _ in 0..STAR_COUNT {
+        let dir = loop {
+            let v = Vec3::new(
+                star_rng.gen_range(-1.0_f32..1.0),
+                star_rng.gen_range(-1.0_f32..1.0),
+                star_rng.gen_range(-1.0_f32..1.0),
+            );
+            if v.length_squared() > 1e-4 {
+                break v.normalize();
+            }
+        };
+        let dist = star_rng.gen_range(1_000.0_f32..3_000.0_f32);
+        let size = star_rng.gen_range(0.4_f32..1.2_f32);
+        commands.spawn((
+            Mesh3d(star_mesh.clone()),
+            MeshMaterial3d(star_mat.clone()),
+            Transform::from_translation(dir * dist).with_scale(Vec3::splat(size)),
+        ));
+    }
+
     // ── Asteroid field ────────────────────────────────────────────────────────
-    let sphere_mesh = meshes.add(Sphere::new(1.0));
     let rock_mat = materials.add(StandardMaterial {
         base_color: Color::srgb(0.50, 0.45, 0.40),
         perceptual_roughness: 0.9,
         ..default()
     });
     let mut rng = SmallRng::seed_from_u64(42);
-    spawn_asteroid_field(&mut commands, &sphere_mesh, &rock_mat, &mut rng);
+    spawn_asteroid_field(&mut commands, &mut meshes, &rock_mat, &mut rng);
 
     // ── HUD ───────────────────────────────────────────────────────────────────
     commands.spawn((
@@ -210,7 +248,7 @@ fn update_camera(player: Res<Player>, mut query: Query<&mut Transform, With<Came
 
 fn spawn_asteroid_field(
     commands: &mut Commands,
-    mesh: &Handle<Mesh>,
+    meshes: &mut Assets<Mesh>,
     mat: &Handle<StandardMaterial>,
     rng: &mut impl Rng,
 ) {
@@ -227,14 +265,40 @@ fn spawn_asteroid_field(
         };
         let dist = rng.gen_range(ASTEROID_MIN_DIST..ASTEROID_MAX_DIST);
         let scale = rng.gen_range(0.5_f32..3.0_f32);
+        let rock_mesh = make_rock_mesh(meshes, rng);
 
         commands.spawn((
-            Mesh3d(mesh.clone()),
+            Mesh3d(rock_mesh),
             MeshMaterial3d(mat.clone()),
             Transform::from_translation(dir * dist).with_scale(Vec3::splat(scale)),
             Asteroid { radius: scale },
         ));
     }
+}
+
+/// Build a unique lumpy rock mesh by randomly perturbing sphere vertices.
+///
+/// Each vertex is scaled along its radial direction by an independent random
+/// factor (0.75–1.25), then flat normals are computed for a faceted look.
+fn make_rock_mesh(meshes: &mut Assets<Mesh>, rng: &mut impl Rng) -> Handle<Mesh> {
+    let mut mesh: Mesh = Sphere::new(1.0).into();
+
+    if let Some(VertexAttributeValues::Float32x3(positions)) =
+        mesh.attribute_mut(Mesh::ATTRIBUTE_POSITION)
+    {
+        for pos in positions.iter_mut() {
+            let factor = rng.gen_range(0.85_f32..1.15_f32);
+            pos[0] *= factor;
+            pos[1] *= factor;
+            pos[2] *= factor;
+        }
+    }
+
+    // Flat normals require each triangle to have its own vertex copies.
+    mesh.duplicate_vertices();
+    mesh.compute_flat_normals();
+
+    meshes.add(mesh)
 }
 
 fn update_hud(
