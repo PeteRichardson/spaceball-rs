@@ -14,6 +14,14 @@
 //!
 //! Spaceball is optional — the scene renders with a static camera if no device
 //! is available.
+//!
+//! ── Stage 3 ─────────────────────────────────────────────────────────────────
+//! Asteroid field.
+//!
+//! Placeholder spheres become proper Asteroid entities carrying a radius field
+//! (needed for collision in Stage 5).  Spawning is extracted into
+//! spawn_asteroid_field so later stages can refill the field as the player
+//! moves.  A HUD overlay shows the live asteroid count.
 //! ────────────────────────────────────────────────────────────────────────────
 
 use std::sync::{Arc, Mutex};
@@ -27,6 +35,26 @@ const DEFAULT_PORT: &str = "/dev/cu.usbserial-AJ03ACPV";
 /// Raw Spaceball values reach ±~16 000 at full deflection.
 const T_SCALE: f32 = 3.0 / 16_000.0; // world units per raw unit
 const R_SCALE: f32 = std::f32::consts::PI / 16_000.0; // radians per raw unit
+
+/// Number of asteroids kept alive in the field at all times.
+const ASTEROID_COUNT: usize = 20;
+/// Asteroids are spawned in a shell at this distance range from the player.
+const ASTEROID_MIN_DIST: f32 = 20.0;
+const ASTEROID_MAX_DIST: f32 = 80.0;
+
+// ── Components ───────────────────────────────────────────────────────────────
+
+/// Marker + data for asteroid entities.
+#[derive(Component)]
+#[allow(dead_code)]
+struct Asteroid {
+    /// World-space collision radius (= Transform scale, since base mesh r = 1).
+    radius: f32,
+}
+
+/// Marker for the HUD text node that displays the asteroid count.
+#[derive(Component)]
+struct AsteroidCountText;
 
 // ── Shared player state ──────────────────────────────────────────────────────
 
@@ -114,7 +142,7 @@ fn main() {
         }))
         .insert_resource(Player(player_state))
         .add_systems(Startup, setup)
-        .add_systems(Update, update_camera)
+        .add_systems(Update, (update_camera, update_hud))
         .run();
 }
 
@@ -142,18 +170,51 @@ fn setup(
         Transform::from_rotation(Quat::from_euler(EulerRot::XYZ, -0.5, 0.5, 0.0)),
     ));
 
-    // ── Asteroid placeholders ────────────────────────────────────────────────
-    // Spheres scattered in a shell 20–80 units in front of the camera.
+    // ── Asteroid field ────────────────────────────────────────────────────────
     let sphere_mesh = meshes.add(Sphere::new(1.0));
     let rock_mat = materials.add(StandardMaterial {
         base_color: Color::srgb(0.50, 0.45, 0.40),
         perceptual_roughness: 0.9,
         ..default()
     });
-
     let mut rng = SmallRng::seed_from_u64(42);
-    for _ in 0..20 {
-        // Pick a random direction, rejecting near-zero vectors.
+    spawn_asteroid_field(&mut commands, &sphere_mesh, &rock_mat, &mut rng);
+
+    // ── HUD ───────────────────────────────────────────────────────────────────
+    commands.spawn((
+        Text::new(format!("Asteroids: {ASTEROID_COUNT}")),
+        TextFont {
+            font_size: 18.0,
+            ..default()
+        },
+        TextColor(Color::WHITE),
+        Node {
+            position_type: PositionType::Absolute,
+            top: Val::Px(12.0),
+            left: Val::Px(12.0),
+            ..default()
+        },
+        AsteroidCountText,
+    ));
+}
+
+// ── Systems ──────────────────────────────────────────────────────────────────
+
+fn update_camera(player: Res<Player>, mut query: Query<&mut Transform, With<Camera3d>>) {
+    let state = player.0.lock().unwrap();
+    if let Ok(mut transform) = query.get_single_mut() {
+        transform.translation = state.position;
+        transform.rotation = state.orientation;
+    }
+}
+
+fn spawn_asteroid_field(
+    commands: &mut Commands,
+    mesh: &Handle<Mesh>,
+    mat: &Handle<StandardMaterial>,
+    rng: &mut impl Rng,
+) {
+    for _ in 0..ASTEROID_COUNT {
         let dir = loop {
             let v = Vec3::new(
                 rng.gen_range(-1.0_f32..1.0),
@@ -164,24 +225,24 @@ fn setup(
                 break v.normalize();
             }
         };
-
-        let dist = rng.gen_range(20.0_f32..80.0);
-        let scale = rng.gen_range(0.5_f32..3.0);
+        let dist = rng.gen_range(ASTEROID_MIN_DIST..ASTEROID_MAX_DIST);
+        let scale = rng.gen_range(0.5_f32..3.0_f32);
 
         commands.spawn((
-            Mesh3d(sphere_mesh.clone()),
-            MeshMaterial3d(rock_mat.clone()),
+            Mesh3d(mesh.clone()),
+            MeshMaterial3d(mat.clone()),
             Transform::from_translation(dir * dist).with_scale(Vec3::splat(scale)),
+            Asteroid { radius: scale },
         ));
     }
 }
 
-// ── Systems ──────────────────────────────────────────────────────────────────
-
-fn update_camera(player: Res<Player>, mut query: Query<&mut Transform, With<Camera3d>>) {
-    let state = player.0.lock().unwrap();
-    if let Ok(mut transform) = query.get_single_mut() {
-        transform.translation = state.position;
-        transform.rotation = state.orientation;
+fn update_hud(
+    asteroids: Query<(), With<Asteroid>>,
+    mut text_query: Query<&mut Text, With<AsteroidCountText>>,
+) {
+    let count = asteroids.iter().count();
+    if let Ok(mut t) = text_query.get_single_mut() {
+        *t = Text::new(format!("Asteroids: {count}"));
     }
 }
