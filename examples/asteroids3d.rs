@@ -54,6 +54,14 @@
 //! BULLET_LIFETIME seconds, and split any asteroid they hit (same fragment
 //! rules as Stage 6).  A score counter increments by one per hit asteroid
 //! and is shown in the HUD below the asteroid count.
+//!
+//! ── Stage 8 ─────────────────────────────────────────────────────────────────
+//! Wave system.
+//!
+//! The field is no longer infinite.  The player must destroy every asteroid
+//! (including all fragments) to clear a wave.  After a WAVE_CLEAR_PAUSE
+//! second pause a new wave begins with WAVE_INCREMENT extra asteroids.
+//! Asteroids that drift out of range simply vanish — they are not replaced.
 //! ────────────────────────────────────────────────────────────────────────────
 
 use std::sync::{Arc, Mutex};
@@ -66,17 +74,21 @@ use spaceball_rs::{Packet, Spaceball};
 const DEFAULT_PORT: &str = "/dev/cu.usbserial-AJ03ACPV";
 
 /// Raw Spaceball values reach ±~16 000 at full deflection.
-const T_SCALE: f32 = 3.0 / 16_000.0; // world units per raw unit
+const T_SCALE: f32 = 10.0 / 16_000.0; // world units per raw unit
 const R_SCALE: f32 = std::f32::consts::PI / 16_000.0; // radians per raw unit
 
-/// Number of asteroids kept alive in the field at all times.
-const ASTEROID_COUNT: usize = 40;
+/// Starting number of asteroids for wave 1.
+const INITIAL_WAVE_SIZE: usize = 5;
+/// Additional asteroids added per wave.
+const WAVE_INCREMENT: usize = 2;
+/// Seconds to pause between a wave clearing and the next wave spawning.
+const WAVE_CLEAR_PAUSE: f32 = 3.0;
 /// Asteroids are spawned in a shell at this distance range from the player.
 const ASTEROID_MIN_DIST: f32 = 20.0;
 const ASTEROID_MAX_DIST: f32 = 80.0;
 /// Number of background stars.
 const STAR_COUNT: usize = 600;
-/// Asteroids beyond this distance from the player are despawned and respawned.
+/// Asteroids beyond this distance from the player are despawned (not replaced).
 const ASTEROID_RESPAWN_DIST: f32 = 160.0;
 /// Asteroid radius below which a collision produces no fragments.
 const ASTEROID_MIN_RADIUS: f32 = 0.3;
@@ -86,8 +98,11 @@ const FRAGMENT_SPEED: f32 = 3.0;
 const BULLET_SPEED: f32 = 80.0;
 /// Bullet despawn time (seconds).
 const BULLET_LIFETIME: f32 = 3.0;
-/// Bullet collision radius (world units).
+/// Bullet collision radius (world units) — triggers the blast on contact.
 const BULLET_RADIUS: f32 = 0.3;
+/// Blast radius: all asteroids within this distance are split when a bullet
+/// detonates (i.e. makes first contact with any asteroid).
+const BLAST_RADIUS: f32 = 5.0;
 
 // ── Components ───────────────────────────────────────────────────────────────
 
@@ -119,6 +134,14 @@ struct Bullet {
 #[derive(Component)]
 struct ScoreText;
 
+/// Marker for the HUD text node that displays the current wave number.
+#[derive(Component)]
+struct WaveText;
+
+/// Marker for the centered "Wave N Clear!" overlay (hidden during a wave).
+#[derive(Component)]
+struct WaveClearText;
+
 /// Material handle kept alive so despawned asteroids can be respawned cheaply.
 #[derive(Resource)]
 struct AsteroidAssets {
@@ -134,6 +157,23 @@ struct Score(u32);
 struct BulletAssets {
     mesh: Handle<Mesh>,
     mat: Handle<StandardMaterial>,
+}
+
+/// Tracks the current wave number and the countdown between waves.
+#[derive(Resource)]
+struct WaveState {
+    wave: u32,
+    /// Seconds remaining until the next wave spawns; 0.0 while a wave is active.
+    clear_timer: f32,
+}
+
+impl Default for WaveState {
+    fn default() -> Self {
+        WaveState {
+            wave: 1,
+            clear_timer: 0.0,
+        }
+    }
 }
 
 // ── Shared player state ──────────────────────────────────────────────────────
@@ -235,6 +275,7 @@ fn main() {
         .insert_resource(ClearColor(Color::BLACK))
         .insert_resource(Player(player_state))
         .insert_resource(Score::default())
+        .insert_resource(WaveState::default())
         .add_systems(Startup, setup)
         .add_systems(
             Update,
@@ -243,11 +284,12 @@ fn main() {
                 update_hud,
                 drift_asteroids,
                 asteroid_collisions,
-                refill_asteroids,
                 fire_bullets,
                 update_bullets,
                 bullet_hits,
                 update_score_hud,
+                check_wave_clear,
+                update_wave_hud,
             ),
         )
         .run();
@@ -315,11 +357,18 @@ fn setup(
         mat: rock_mat.clone(),
     });
     let mut rng = SmallRng::seed_from_u64(42);
-    spawn_asteroid_field(&mut commands, &mut meshes, &rock_mat, &mut rng);
+    spawn_asteroid_field(
+        &mut commands,
+        &mut meshes,
+        &rock_mat,
+        &mut rng,
+        Vec3::ZERO,
+        INITIAL_WAVE_SIZE,
+    );
 
     // ── HUD ───────────────────────────────────────────────────────────────────
     commands.spawn((
-        Text::new(format!("Asteroids: {ASTEROID_COUNT}")),
+        Text::new(format!("Asteroids: {INITIAL_WAVE_SIZE}")),
         TextFont {
             font_size: 18.0,
             ..default()
@@ -361,7 +410,46 @@ fn setup(
         },
         ScoreText,
     ));
+    // ── Wave HUD ─────────────────────────────────────────────────────────────
+    commands.spawn((
+        Text::new("Wave: 1"),
+        TextFont {
+            font_size: 18.0,
+            ..default()
+        },
+        TextColor(Color::WHITE),
+        Node {
+            position_type: PositionType::Absolute,
+            top: Val::Px(60.0),
+            left: Val::Px(12.0),
+            ..default()
+        },
+        WaveText,
+    ));
 
+    // ── Wave-clear overlay (hidden while a wave is active) ────────────────────
+    commands
+        .spawn(Node {
+            width: Val::Percent(100.0),
+            height: Val::Percent(100.0),
+            align_items: AlignItems::Center,
+            justify_content: JustifyContent::Center,
+            position_type: PositionType::Absolute,
+            ..default()
+        })
+        .with_children(|parent| {
+            parent.spawn((
+                Text::new(""),
+                TextFont {
+                    font_size: 40.0,
+                    ..default()
+                },
+                TextColor(Color::srgb(1.0, 0.85, 0.2)),
+                Node::default(),
+                Visibility::Hidden,
+                WaveClearText,
+            ));
+        });
     // ── Crosshair ─────────────────────────────────────────────────────────────
     // Full-screen transparent flex container centers the zero-size anchor node.
     // The two bars are absolutely offset from that anchor so they cross at the
@@ -426,8 +514,10 @@ fn spawn_asteroid_field(
     meshes: &mut Assets<Mesh>,
     mat: &Handle<StandardMaterial>,
     rng: &mut impl Rng,
+    center: Vec3,
+    count: usize,
 ) {
-    for _ in 0..ASTEROID_COUNT {
+    for _ in 0..count {
         let dir = loop {
             let v = Vec3::new(
                 rng.gen_range(-1.0_f32..1.0),
@@ -455,7 +545,7 @@ fn spawn_asteroid_field(
         commands.spawn((
             Mesh3d(rock_mesh),
             MeshMaterial3d(mat.clone()),
-            Transform::from_translation(dir * dist).with_scale(Vec3::splat(scale)),
+            Transform::from_translation(center + dir * dist).with_scale(Vec3::splat(scale)),
             Asteroid {
                 radius: scale,
                 velocity,
@@ -502,62 +592,20 @@ fn update_hud(
 
 fn drift_asteroids(
     mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    assets: Res<AsteroidAssets>,
     player: Res<Player>,
     time: Res<Time>,
     mut query: Query<(Entity, &mut Transform, &Asteroid)>,
 ) {
     let dt = time.delta_secs();
     let player_pos = player.0.lock().unwrap().position;
-    let mut rng = rand::thread_rng();
 
     for (entity, mut transform, asteroid) in &mut query {
-        // Translate at constant velocity.
         transform.translation += asteroid.velocity * dt;
-
-        // Spin: intrinsic rotation each frame.
         let spin = Quat::from_scaled_axis(asteroid.angular_velocity * dt);
         transform.rotation = (transform.rotation * spin).normalize();
-
-        // Respawn when too far from the player.
+        // Asteroids that drift too far simply vanish (not replaced).
         if (transform.translation - player_pos).length() > ASTEROID_RESPAWN_DIST {
             commands.entity(entity).despawn();
-
-            let dir = loop {
-                let v = Vec3::new(
-                    rng.gen_range(-1.0_f32..1.0),
-                    rng.gen_range(-1.0_f32..1.0),
-                    rng.gen_range(-1.0_f32..1.0),
-                );
-                if v.length_squared() > 1e-4 {
-                    break v.normalize();
-                }
-            };
-            let dist = rng.gen_range(ASTEROID_MIN_DIST..ASTEROID_MAX_DIST);
-            let scale = rng.gen_range(0.5_f32..6.0_f32);
-            let rock_mesh = make_rock_mesh(&mut meshes, &mut rng);
-            let velocity = Vec3::new(
-                rng.gen_range(-1.5_f32..1.5),
-                rng.gen_range(-1.5_f32..1.5),
-                rng.gen_range(-1.5_f32..1.5),
-            );
-            let angular_velocity = Vec3::new(
-                rng.gen_range(-0.3_f32..0.3),
-                rng.gen_range(-0.3_f32..0.3),
-                rng.gen_range(-0.3_f32..0.3),
-            );
-
-            commands.spawn((
-                Mesh3d(rock_mesh),
-                MeshMaterial3d(assets.mat.clone()),
-                Transform::from_translation(player_pos + dir * dist).with_scale(Vec3::splat(scale)),
-                Asteroid {
-                    radius: scale,
-                    velocity,
-                    angular_velocity,
-                },
-            ));
         }
     }
 }
@@ -629,57 +677,6 @@ fn asteroid_collisions(
     }
 }
 
-/// Spawn fresh asteroids near the player whenever collisions reduce the count.
-fn refill_asteroids(
-    mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    assets: Res<AsteroidAssets>,
-    player: Res<Player>,
-    query: Query<(), With<Asteroid>>,
-) {
-    let count = query.iter().count();
-    if count >= ASTEROID_COUNT {
-        return;
-    }
-    let player_pos = player.0.lock().unwrap().position;
-    let mut rng = rand::thread_rng();
-    for _ in count..ASTEROID_COUNT {
-        let dir = loop {
-            let v = Vec3::new(
-                rng.gen_range(-1.0_f32..1.0),
-                rng.gen_range(-1.0_f32..1.0),
-                rng.gen_range(-1.0_f32..1.0),
-            );
-            if v.length_squared() > 1e-4 {
-                break v.normalize();
-            }
-        };
-        let dist = rng.gen_range(ASTEROID_MIN_DIST..ASTEROID_MAX_DIST);
-        let scale = rng.gen_range(0.5_f32..6.0_f32);
-        let rock_mesh = make_rock_mesh(&mut meshes, &mut rng);
-        let velocity = Vec3::new(
-            rng.gen_range(-1.5_f32..1.5),
-            rng.gen_range(-1.5_f32..1.5),
-            rng.gen_range(-1.5_f32..1.5),
-        );
-        let angular_velocity = Vec3::new(
-            rng.gen_range(-0.3_f32..0.3),
-            rng.gen_range(-0.3_f32..0.3),
-            rng.gen_range(-0.3_f32..0.3),
-        );
-        commands.spawn((
-            Mesh3d(rock_mesh),
-            MeshMaterial3d(assets.mat.clone()),
-            Transform::from_translation(player_pos + dir * dist).with_scale(Vec3::splat(scale)),
-            Asteroid {
-                radius: scale,
-                velocity,
-                angular_velocity,
-            },
-        ));
-    }
-}
-
 /// Spawn a bullet from the player's position when button 1 is pressed.
 fn fire_bullets(player: Res<Player>, assets: Res<BulletAssets>, mut commands: Commands) {
     let mut state = player.0.lock().unwrap();
@@ -716,7 +713,13 @@ fn update_bullets(
     }
 }
 
-/// Test each live bullet against every asteroid; split asteroids on hit.
+/// Test each live bullet against every asteroid.
+///
+/// A bullet detonates on first contact with any asteroid and damages every
+/// asteroid within BLAST_RADIUS of the impact point — a proximity blast that
+/// makes it possible to clear clusters and hit small fragments without perfect
+/// aim.  Snapshots asteroid data upfront so multiple bullets in the same
+/// frame don't double-despawn the same entity.
 fn bullet_hits(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -725,21 +728,42 @@ fn bullet_hits(
     bullets: Query<(Entity, &Transform), With<Bullet>>,
     asteroids: Query<(Entity, &Transform, &Asteroid)>,
 ) {
+    // Snapshot so we can iterate safely across multiple bullet detonations.
+    let asteroid_data: Vec<(Entity, Vec3, f32, Vec3, Vec3)> = asteroids
+        .iter()
+        .map(|(e, t, a)| (e, t.translation, a.radius, a.velocity, a.angular_velocity))
+        .collect();
+
+    let mut asteroids_hit: Vec<Entity> = Vec::new();
+
     for (b_entity, b_transform) in bullets.iter() {
         let b_pos = b_transform.translation;
-        for (a_entity, a_transform, asteroid) in asteroids.iter() {
-            let a_pos = a_transform.translation;
-            if b_pos.distance(a_pos) >= BULLET_RADIUS + asteroid.radius {
+
+        // Does this bullet touch any asteroid? (trigger condition)
+        let triggered = asteroid_data
+            .iter()
+            .any(|&(_, pos, r, _, _)| b_pos.distance(pos) < BULLET_RADIUS + r);
+        if !triggered {
+            continue;
+        }
+
+        // Detonate: consume the bullet, then damage everything in BLAST_RADIUS.
+        commands.entity(b_entity).despawn();
+        let mut rng = rand::thread_rng();
+
+        for &(a_entity, a_pos, a_r, a_vel, a_ang) in &asteroid_data {
+            if asteroids_hit.contains(&a_entity) {
+                continue;
+            }
+            if b_pos.distance(a_pos) >= BLAST_RADIUS {
                 continue;
             }
 
-            // Hit: consume the bullet and destroy the asteroid.
-            commands.entity(b_entity).despawn();
             commands.entity(a_entity).despawn();
+            asteroids_hit.push(a_entity);
             score.0 += 1;
 
-            // Split the asteroid along the impact axis.
-            let frag_r = asteroid.radius * 0.55;
+            let frag_r = a_r * 0.55;
             if frag_r >= ASTEROID_MIN_RADIUS {
                 let delta = a_pos - b_pos;
                 let normal = if delta.length_squared() > 1e-8 {
@@ -747,7 +771,6 @@ fn bullet_hits(
                 } else {
                     Vec3::Y
                 };
-                let mut rng = rand::thread_rng();
                 for &sign in &[-1.0_f32, 1.0_f32] {
                     let rock_mesh = make_rock_mesh(&mut meshes, &mut rng);
                     commands.spawn((
@@ -757,13 +780,12 @@ fn bullet_hits(
                             .with_scale(Vec3::splat(frag_r)),
                         Asteroid {
                             radius: frag_r,
-                            velocity: asteroid.velocity + normal * sign * FRAGMENT_SPEED,
-                            angular_velocity: asteroid.angular_velocity * 1.5,
+                            velocity: a_vel + normal * sign * FRAGMENT_SPEED,
+                            angular_velocity: a_ang * 1.5,
                         },
                     ));
                 }
             }
-            break; // bullet is consumed — skip remaining asteroids
         }
     }
 }
@@ -775,5 +797,64 @@ fn update_score_hud(score: Res<Score>, mut query: Query<&mut Text, With<ScoreTex
     }
     if let Ok(mut t) = query.get_single_mut() {
         *t = Text::new(format!("Score: {}", score.0));
+    }
+}
+
+/// Returns the number of asteroids to spawn for the given wave number.
+fn wave_asteroid_count(wave: u32) -> usize {
+    INITIAL_WAVE_SIZE + (wave as usize - 1) * WAVE_INCREMENT
+}
+
+/// Detect wave-clear, run the inter-wave countdown, and spawn the next wave.
+fn check_wave_clear(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    assets: Res<AsteroidAssets>,
+    player: Res<Player>,
+    time: Res<Time>,
+    mut wave: ResMut<WaveState>,
+    asteroids: Query<(), With<Asteroid>>,
+    mut clear_msg: Query<(&mut Text, &mut Visibility), With<WaveClearText>>,
+) {
+    if wave.clear_timer > 0.0 {
+        // Counting down between waves.
+        wave.clear_timer -= time.delta_secs();
+        if wave.clear_timer <= 0.0 {
+            wave.clear_timer = 0.0;
+            wave.wave += 1;
+            // Hide the clear message.
+            if let Ok((_, mut vis)) = clear_msg.get_single_mut() {
+                *vis = Visibility::Hidden;
+            }
+            // Spawn the next wave centred on the player.
+            let count = wave_asteroid_count(wave.wave);
+            let center = player.0.lock().unwrap().position;
+            let mut rng = rand::thread_rng();
+            spawn_asteroid_field(
+                &mut commands,
+                &mut meshes,
+                &assets.mat,
+                &mut rng,
+                center,
+                count,
+            );
+        }
+    } else if asteroids.iter().count() == 0 {
+        // Wave cleared — start the inter-wave countdown.
+        wave.clear_timer = WAVE_CLEAR_PAUSE;
+        if let Ok((mut t, mut vis)) = clear_msg.get_single_mut() {
+            *t = Text::new(format!("Wave {} Clear!", wave.wave));
+            *vis = Visibility::Inherited;
+        }
+    }
+}
+
+/// Keep the wave HUD label in sync with the current wave number.
+fn update_wave_hud(wave: Res<WaveState>, mut query: Query<&mut Text, With<WaveText>>) {
+    if !wave.is_changed() {
+        return;
+    }
+    if let Ok(mut t) = query.get_single_mut() {
+        *t = Text::new(format!("Wave: {}", wave.wave));
     }
 }
