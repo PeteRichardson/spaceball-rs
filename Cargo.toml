@@ -10,3 +10,6 @@ serialport = "4"
 
 [dev-dependencies]
 three-d = { version = "0.17", features = ["egui-gui"] }
+bevy = "0.15"
+bevy_rapier3d = "0.28"
+rand = { version = "0.8", features = ["small_rng"] }
