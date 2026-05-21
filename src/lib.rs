@@ -67,8 +67,9 @@ impl Spaceball {
             .open()?;
 
         // Assert RTS so the Spaceball's CTS input is driven high.
-        // The hardware spec requires CTS to be asserted or the Spaceball won't talk.
-        port.write_request_to_send(true)?;
+        // Some USB-serial adapters don't support software modem control and return
+        // EINVAL here — ignore the error, as many adapters assert RTS automatically.
+        let _ = port.write_request_to_send(true);
 
         port.write_all(INIT_BYTES)?;
         port.flush()?;
