@@ -45,6 +45,15 @@
 //! splits into two fragments that fly apart along the collision normal.
 //! Fragments below ASTEROID_MIN_RADIUS simply vanish.
 //! A refill_asteroids system tops up the field after any net loss.
+//!
+//! ── Stage 7 ─────────────────────────────────────────────────────────────────
+//! Shooting.
+//!
+//! Spaceball button 1 fires a glowing bullet from the camera position along
+//! its forward axis.  Bullets travel at BULLET_SPEED, expire after
+//! BULLET_LIFETIME seconds, and split any asteroid they hit (same fragment
+//! rules as Stage 6).  A score counter increments by one per hit asteroid
+//! and is shown in the HUD below the asteroid count.
 //! ────────────────────────────────────────────────────────────────────────────
 
 use std::sync::{Arc, Mutex};
@@ -73,6 +82,12 @@ const ASTEROID_RESPAWN_DIST: f32 = 160.0;
 const ASTEROID_MIN_RADIUS: f32 = 0.3;
 /// Speed added to each fragment along the collision normal on breakup (u/s).
 const FRAGMENT_SPEED: f32 = 3.0;
+/// Bullet travel speed (world units/sec).
+const BULLET_SPEED: f32 = 80.0;
+/// Bullet despawn time (seconds).
+const BULLET_LIFETIME: f32 = 3.0;
+/// Bullet collision radius (world units).
+const BULLET_RADIUS: f32 = 0.3;
 
 // ── Components ───────────────────────────────────────────────────────────────
 
@@ -92,9 +107,32 @@ struct Asteroid {
 #[derive(Component)]
 struct AsteroidCountText;
 
+/// Bullet fired by the player.
+#[derive(Component)]
+struct Bullet {
+    velocity: Vec3,
+    /// Remaining lifetime in seconds; entity is despawned when this reaches 0.
+    lifetime: f32,
+}
+
+/// Marker for the HUD text node that displays the score.
+#[derive(Component)]
+struct ScoreText;
+
 /// Material handle kept alive so despawned asteroids can be respawned cheaply.
 #[derive(Resource)]
 struct AsteroidAssets {
+    mat: Handle<StandardMaterial>,
+}
+
+/// Running total of asteroids destroyed by the player.
+#[derive(Resource, Default)]
+struct Score(u32);
+
+/// Bullet mesh and material handles shared across all bullet entities.
+#[derive(Resource)]
+struct BulletAssets {
+    mesh: Handle<Mesh>,
     mat: Handle<StandardMaterial>,
 }
 
@@ -103,6 +141,9 @@ struct AsteroidAssets {
 struct PlayerState {
     position: Vec3,
     orientation: Quat,
+    /// Set by the background thread on a rising edge of button 1.
+    /// Cleared by fire_bullets after spawning a bullet.
+    fire_pressed: bool,
 }
 
 impl Default for PlayerState {
@@ -110,6 +151,7 @@ impl Default for PlayerState {
         PlayerState {
             position: Vec3::ZERO,
             orientation: Quat::IDENTITY,
+            fire_pressed: false,
         }
     }
 }
@@ -130,6 +172,7 @@ fn main() {
         Ok(mut sm) => {
             let state_bg = Arc::clone(&player_state);
             std::thread::spawn(move || {
+                let mut prev_fire = false;
                 for packet in sm.packets() {
                     match packet {
                         Ok(Packet::Ball(b)) => {
@@ -160,6 +203,13 @@ fn main() {
                         Ok(Packet::Key(k)) => {
                             if k.pick {
                                 *state_bg.lock().unwrap() = PlayerState::default();
+                                prev_fire = false;
+                            } else {
+                                let fire_now = k.buttons[0];
+                                if fire_now && !prev_fire {
+                                    state_bg.lock().unwrap().fire_pressed = true;
+                                }
+                                prev_fire = fire_now;
                             }
                         }
                         _ => {}
@@ -184,6 +234,7 @@ fn main() {
         }))
         .insert_resource(ClearColor(Color::BLACK))
         .insert_resource(Player(player_state))
+        .insert_resource(Score::default())
         .add_systems(Startup, setup)
         .add_systems(
             Update,
@@ -193,6 +244,10 @@ fn main() {
                 drift_asteroids,
                 asteroid_collisions,
                 refill_asteroids,
+                fire_bullets,
+                update_bullets,
+                bullet_hits,
+                update_score_hud,
             ),
         )
         .run();
@@ -277,6 +332,34 @@ fn setup(
             ..default()
         },
         AsteroidCountText,
+    ));
+
+    // ── Bullet assets ─────────────────────────────────────────────────────────
+    let bullet_mesh = meshes.add(Sphere::new(1.0));
+    let bullet_mat = materials.add(StandardMaterial {
+        emissive: LinearRgba::new(8.0, 5.0, 0.5, 1.0), // hot orange glow
+        ..default()
+    });
+    commands.insert_resource(BulletAssets {
+        mesh: bullet_mesh,
+        mat: bullet_mat,
+    });
+
+    // ── Score HUD ─────────────────────────────────────────────────────────────
+    commands.spawn((
+        Text::new("Score: 0"),
+        TextFont {
+            font_size: 18.0,
+            ..default()
+        },
+        TextColor(Color::WHITE),
+        Node {
+            position_type: PositionType::Absolute,
+            top: Val::Px(36.0),
+            left: Val::Px(12.0),
+            ..default()
+        },
+        ScoreText,
     ));
 }
 
@@ -546,5 +629,103 @@ fn refill_asteroids(
                 angular_velocity,
             },
         ));
+    }
+}
+
+/// Spawn a bullet from the player's position when button 1 is pressed.
+fn fire_bullets(player: Res<Player>, assets: Res<BulletAssets>, mut commands: Commands) {
+    let mut state = player.0.lock().unwrap();
+    if !state.fire_pressed {
+        return;
+    }
+    state.fire_pressed = false;
+    let pos = state.position;
+    let forward = state.orientation.mul_vec3(-Vec3::Z);
+    commands.spawn((
+        Mesh3d(assets.mesh.clone()),
+        MeshMaterial3d(assets.mat.clone()),
+        Transform::from_translation(pos + forward * 1.0).with_scale(Vec3::splat(BULLET_RADIUS)),
+        Bullet {
+            velocity: forward * BULLET_SPEED,
+            lifetime: BULLET_LIFETIME,
+        },
+    ));
+}
+
+/// Advance bullets and despawn any that have expired.
+fn update_bullets(
+    mut commands: Commands,
+    time: Res<Time>,
+    mut query: Query<(Entity, &mut Transform, &mut Bullet)>,
+) {
+    let dt = time.delta_secs();
+    for (entity, mut transform, mut bullet) in query.iter_mut() {
+        transform.translation += bullet.velocity * dt;
+        bullet.lifetime -= dt;
+        if bullet.lifetime <= 0.0 {
+            commands.entity(entity).despawn();
+        }
+    }
+}
+
+/// Test each live bullet against every asteroid; split asteroids on hit.
+fn bullet_hits(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    assets: Res<AsteroidAssets>,
+    mut score: ResMut<Score>,
+    bullets: Query<(Entity, &Transform), With<Bullet>>,
+    asteroids: Query<(Entity, &Transform, &Asteroid)>,
+) {
+    for (b_entity, b_transform) in bullets.iter() {
+        let b_pos = b_transform.translation;
+        for (a_entity, a_transform, asteroid) in asteroids.iter() {
+            let a_pos = a_transform.translation;
+            if b_pos.distance(a_pos) >= BULLET_RADIUS + asteroid.radius {
+                continue;
+            }
+
+            // Hit: consume the bullet and destroy the asteroid.
+            commands.entity(b_entity).despawn();
+            commands.entity(a_entity).despawn();
+            score.0 += 1;
+
+            // Split the asteroid along the impact axis.
+            let frag_r = asteroid.radius * 0.55;
+            if frag_r >= ASTEROID_MIN_RADIUS {
+                let delta = a_pos - b_pos;
+                let normal = if delta.length_squared() > 1e-8 {
+                    delta.normalize()
+                } else {
+                    Vec3::Y
+                };
+                let mut rng = rand::thread_rng();
+                for &sign in &[-1.0_f32, 1.0_f32] {
+                    let rock_mesh = make_rock_mesh(&mut meshes, &mut rng);
+                    commands.spawn((
+                        Mesh3d(rock_mesh),
+                        MeshMaterial3d(assets.mat.clone()),
+                        Transform::from_translation(a_pos + normal * sign * frag_r * 1.5)
+                            .with_scale(Vec3::splat(frag_r)),
+                        Asteroid {
+                            radius: frag_r,
+                            velocity: asteroid.velocity + normal * sign * FRAGMENT_SPEED,
+                            angular_velocity: asteroid.angular_velocity * 1.5,
+                        },
+                    ));
+                }
+            }
+            break; // bullet is consumed — skip remaining asteroids
+        }
+    }
+}
+
+/// Keep the score HUD in sync with the Score resource.
+fn update_score_hud(score: Res<Score>, mut query: Query<&mut Text, With<ScoreText>>) {
+    if !score.is_changed() {
+        return;
+    }
+    if let Ok(mut t) = query.get_single_mut() {
+        *t = Text::new(format!("Score: {}", score.0));
     }
 }
