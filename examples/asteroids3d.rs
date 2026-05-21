@@ -361,6 +361,54 @@ fn setup(
         },
         ScoreText,
     ));
+
+    // ── Crosshair ─────────────────────────────────────────────────────────────
+    // Full-screen transparent flex container centers the zero-size anchor node.
+    // The two bars are absolutely offset from that anchor so they cross at the
+    // exact screen centre.
+    commands
+        .spawn(Node {
+            width: Val::Percent(100.0),
+            height: Val::Percent(100.0),
+            align_items: AlignItems::Center,
+            justify_content: JustifyContent::Center,
+            position_type: PositionType::Absolute,
+            ..default()
+        })
+        .with_children(|parent| {
+            parent
+                .spawn(Node {
+                    width: Val::Px(0.0),
+                    height: Val::Px(0.0),
+                    ..default()
+                })
+                .with_children(|center| {
+                    // Horizontal bar: 20 px wide, 2 px tall
+                    center.spawn((
+                        Node {
+                            width: Val::Px(20.0),
+                            height: Val::Px(2.0),
+                            position_type: PositionType::Absolute,
+                            left: Val::Px(-10.0),
+                            top: Val::Px(-1.0),
+                            ..default()
+                        },
+                        BackgroundColor(Color::srgba(1.0, 1.0, 1.0, 0.8)),
+                    ));
+                    // Vertical bar: 2 px wide, 20 px tall
+                    center.spawn((
+                        Node {
+                            width: Val::Px(2.0),
+                            height: Val::Px(20.0),
+                            position_type: PositionType::Absolute,
+                            left: Val::Px(-1.0),
+                            top: Val::Px(-10.0),
+                            ..default()
+                        },
+                        BackgroundColor(Color::srgba(1.0, 1.0, 1.0, 0.8)),
+                    ));
+                });
+        });
 }
 
 // ── Systems ──────────────────────────────────────────────────────────────────
