@@ -29,6 +29,14 @@
 //! Each asteroid gets a unique procedurally-generated lumpy mesh: a sphere with
 //! vertices randomly perturbed along their radial direction.  Flat normals give
 //! the surface a faceted, rock-like appearance.
+//!
+//! ── Stage 5 ─────────────────────────────────────────────────────────────────
+//! Asteroid drift.
+//!
+//! Each asteroid moves with a constant linear velocity and spins on a random
+//! axis.  When an asteroid drifts farther than ASTEROID_RESPAWN_DIST from the
+//! player it is despawned and a fresh one is spawned nearby, keeping the field
+//! always populated around the player.
 //! ────────────────────────────────────────────────────────────────────────────
 
 use std::sync::{Arc, Mutex};
@@ -51,6 +59,8 @@ const ASTEROID_MIN_DIST: f32 = 20.0;
 const ASTEROID_MAX_DIST: f32 = 80.0;
 /// Number of background stars.
 const STAR_COUNT: usize = 600;
+/// Asteroids beyond this distance from the player are despawned and respawned.
+const ASTEROID_RESPAWN_DIST: f32 = 160.0;
 
 // ── Components ───────────────────────────────────────────────────────────────
 
@@ -60,11 +70,21 @@ const STAR_COUNT: usize = 600;
 struct Asteroid {
     /// World-space collision radius (= Transform scale, since base mesh r = 1).
     radius: f32,
+    /// Constant linear velocity in world space (units/sec).
+    velocity: Vec3,
+    /// Angular velocity as an axis-angle vector in world space (radians/sec).
+    angular_velocity: Vec3,
 }
 
 /// Marker for the HUD text node that displays the asteroid count.
 #[derive(Component)]
 struct AsteroidCountText;
+
+/// Material handle kept alive so despawned asteroids can be respawned cheaply.
+#[derive(Resource)]
+struct AsteroidAssets {
+    mat: Handle<StandardMaterial>,
+}
 
 // ── Shared player state ──────────────────────────────────────────────────────
 
@@ -153,7 +173,7 @@ fn main() {
         .insert_resource(ClearColor(Color::BLACK))
         .insert_resource(Player(player_state))
         .add_systems(Startup, setup)
-        .add_systems(Update, (update_camera, update_hud))
+        .add_systems(Update, (update_camera, update_hud, drift_asteroids))
         .run();
 }
 
@@ -215,6 +235,9 @@ fn setup(
         perceptual_roughness: 0.9,
         ..default()
     });
+    commands.insert_resource(AsteroidAssets {
+        mat: rock_mat.clone(),
+    });
     let mut rng = SmallRng::seed_from_u64(42);
     spawn_asteroid_field(&mut commands, &mut meshes, &rock_mat, &mut rng);
 
@@ -266,12 +289,26 @@ fn spawn_asteroid_field(
         let dist = rng.gen_range(ASTEROID_MIN_DIST..ASTEROID_MAX_DIST);
         let scale = rng.gen_range(0.5_f32..3.0_f32);
         let rock_mesh = make_rock_mesh(meshes, rng);
+        let velocity = Vec3::new(
+            rng.gen_range(-1.5_f32..1.5),
+            rng.gen_range(-1.5_f32..1.5),
+            rng.gen_range(-1.5_f32..1.5),
+        );
+        let angular_velocity = Vec3::new(
+            rng.gen_range(-0.3_f32..0.3),
+            rng.gen_range(-0.3_f32..0.3),
+            rng.gen_range(-0.3_f32..0.3),
+        );
 
         commands.spawn((
             Mesh3d(rock_mesh),
             MeshMaterial3d(mat.clone()),
             Transform::from_translation(dir * dist).with_scale(Vec3::splat(scale)),
-            Asteroid { radius: scale },
+            Asteroid {
+                radius: scale,
+                velocity,
+                angular_velocity,
+            },
         ));
     }
 }
@@ -308,5 +345,67 @@ fn update_hud(
     let count = asteroids.iter().count();
     if let Ok(mut t) = text_query.get_single_mut() {
         *t = Text::new(format!("Asteroids: {count}"));
+    }
+}
+
+fn drift_asteroids(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    assets: Res<AsteroidAssets>,
+    player: Res<Player>,
+    time: Res<Time>,
+    mut query: Query<(Entity, &mut Transform, &Asteroid)>,
+) {
+    let dt = time.delta_secs();
+    let player_pos = player.0.lock().unwrap().position;
+    let mut rng = rand::thread_rng();
+
+    for (entity, mut transform, asteroid) in &mut query {
+        // Translate at constant velocity.
+        transform.translation += asteroid.velocity * dt;
+
+        // Spin: intrinsic rotation each frame.
+        let spin = Quat::from_scaled_axis(asteroid.angular_velocity * dt);
+        transform.rotation = (transform.rotation * spin).normalize();
+
+        // Respawn when too far from the player.
+        if (transform.translation - player_pos).length() > ASTEROID_RESPAWN_DIST {
+            commands.entity(entity).despawn();
+
+            let dir = loop {
+                let v = Vec3::new(
+                    rng.gen_range(-1.0_f32..1.0),
+                    rng.gen_range(-1.0_f32..1.0),
+                    rng.gen_range(-1.0_f32..1.0),
+                );
+                if v.length_squared() > 1e-4 {
+                    break v.normalize();
+                }
+            };
+            let dist = rng.gen_range(ASTEROID_MIN_DIST..ASTEROID_MAX_DIST);
+            let scale = rng.gen_range(0.5_f32..3.0_f32);
+            let rock_mesh = make_rock_mesh(&mut meshes, &mut rng);
+            let velocity = Vec3::new(
+                rng.gen_range(-1.5_f32..1.5),
+                rng.gen_range(-1.5_f32..1.5),
+                rng.gen_range(-1.5_f32..1.5),
+            );
+            let angular_velocity = Vec3::new(
+                rng.gen_range(-0.3_f32..0.3),
+                rng.gen_range(-0.3_f32..0.3),
+                rng.gen_range(-0.3_f32..0.3),
+            );
+
+            commands.spawn((
+                Mesh3d(rock_mesh),
+                MeshMaterial3d(assets.mat.clone()),
+                Transform::from_translation(player_pos + dir * dist).with_scale(Vec3::splat(scale)),
+                Asteroid {
+                    radius: scale,
+                    velocity,
+                    angular_velocity,
+                },
+            ));
+        }
     }
 }
