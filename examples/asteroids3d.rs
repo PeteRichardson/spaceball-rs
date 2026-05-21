@@ -37,6 +37,14 @@
 //! axis.  When an asteroid drifts farther than ASTEROID_RESPAWN_DIST from the
 //! player it is despawned and a fresh one is spawned nearby, keeping the field
 //! always populated around the player.
+//!
+//! ── Stage 6 ─────────────────────────────────────────────────────────────────
+//! Asteroid collisions.
+//!
+//! When two asteroid spheres overlap, both are destroyed and each independently
+//! splits into two fragments that fly apart along the collision normal.
+//! Fragments below ASTEROID_MIN_RADIUS simply vanish.
+//! A refill_asteroids system tops up the field after any net loss.
 //! ────────────────────────────────────────────────────────────────────────────
 
 use std::sync::{Arc, Mutex};
@@ -53,7 +61,7 @@ const T_SCALE: f32 = 3.0 / 16_000.0; // world units per raw unit
 const R_SCALE: f32 = std::f32::consts::PI / 16_000.0; // radians per raw unit
 
 /// Number of asteroids kept alive in the field at all times.
-const ASTEROID_COUNT: usize = 20;
+const ASTEROID_COUNT: usize = 40;
 /// Asteroids are spawned in a shell at this distance range from the player.
 const ASTEROID_MIN_DIST: f32 = 20.0;
 const ASTEROID_MAX_DIST: f32 = 80.0;
@@ -61,6 +69,10 @@ const ASTEROID_MAX_DIST: f32 = 80.0;
 const STAR_COUNT: usize = 600;
 /// Asteroids beyond this distance from the player are despawned and respawned.
 const ASTEROID_RESPAWN_DIST: f32 = 160.0;
+/// Asteroid radius below which a collision produces no fragments.
+const ASTEROID_MIN_RADIUS: f32 = 0.3;
+/// Speed added to each fragment along the collision normal on breakup (u/s).
+const FRAGMENT_SPEED: f32 = 3.0;
 
 // ── Components ───────────────────────────────────────────────────────────────
 
@@ -173,7 +185,16 @@ fn main() {
         .insert_resource(ClearColor(Color::BLACK))
         .insert_resource(Player(player_state))
         .add_systems(Startup, setup)
-        .add_systems(Update, (update_camera, update_hud, drift_asteroids))
+        .add_systems(
+            Update,
+            (
+                update_camera,
+                update_hud,
+                drift_asteroids,
+                asteroid_collisions,
+                refill_asteroids,
+            ),
+        )
         .run();
 }
 
@@ -287,7 +308,7 @@ fn spawn_asteroid_field(
             }
         };
         let dist = rng.gen_range(ASTEROID_MIN_DIST..ASTEROID_MAX_DIST);
-        let scale = rng.gen_range(0.5_f32..3.0_f32);
+        let scale = rng.gen_range(0.5_f32..6.0_f32);
         let rock_mesh = make_rock_mesh(meshes, rng);
         let velocity = Vec3::new(
             rng.gen_range(-1.5_f32..1.5),
@@ -383,7 +404,7 @@ fn drift_asteroids(
                 }
             };
             let dist = rng.gen_range(ASTEROID_MIN_DIST..ASTEROID_MAX_DIST);
-            let scale = rng.gen_range(0.5_f32..3.0_f32);
+            let scale = rng.gen_range(0.5_f32..6.0_f32);
             let rock_mesh = make_rock_mesh(&mut meshes, &mut rng);
             let velocity = Vec3::new(
                 rng.gen_range(-1.5_f32..1.5),
@@ -407,5 +428,123 @@ fn drift_asteroids(
                 },
             ));
         }
+    }
+}
+
+fn asteroid_collisions(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    assets: Res<AsteroidAssets>,
+    query: Query<(Entity, &Transform, &Asteroid)>,
+) {
+    // Snapshot all data upfront to enable pair iteration without borrow conflicts.
+    let asteroids: Vec<(Entity, Vec3, f32, Vec3, Vec3)> = query
+        .iter()
+        .map(|(e, t, a)| (e, t.translation, a.radius, a.velocity, a.angular_velocity))
+        .collect();
+
+    let mut handled: Vec<Entity> = Vec::new();
+
+    for i in 0..asteroids.len() {
+        for j in (i + 1)..asteroids.len() {
+            let (e_a, pos_a, r_a, vel_a, ang_a) = asteroids[i];
+            let (e_b, pos_b, r_b, vel_b, ang_b) = asteroids[j];
+
+            if handled.contains(&e_a) || handled.contains(&e_b) {
+                continue;
+            }
+            if pos_a.distance(pos_b) >= r_a + r_b {
+                continue;
+            }
+
+            // Both asteroids are destroyed; each independently tries to split.
+            commands.entity(e_a).despawn();
+            commands.entity(e_b).despawn();
+            handled.push(e_a);
+            handled.push(e_b);
+
+            // Normal from A toward B — used to orient the fragment spread.
+            let delta = pos_b - pos_a;
+            let normal = if delta.length_squared() > 1e-8 {
+                delta.normalize()
+            } else {
+                Vec3::X
+            };
+
+            let mut rng = rand::thread_rng();
+
+            // Each asteroid produces two fragments if it is large enough.
+            for &(pos, r, vel, ang) in &[(pos_a, r_a, vel_a, ang_a), (pos_b, r_b, vel_b, ang_b)] {
+                let frag_r = r * 0.55;
+                if frag_r < ASTEROID_MIN_RADIUS {
+                    continue; // too small — just vanishes
+                }
+                for &sign in &[-1.0_f32, 1.0_f32] {
+                    let rock_mesh = make_rock_mesh(&mut meshes, &mut rng);
+                    commands.spawn((
+                        Mesh3d(rock_mesh),
+                        MeshMaterial3d(assets.mat.clone()),
+                        Transform::from_translation(pos + normal * sign * frag_r * 1.5)
+                            .with_scale(Vec3::splat(frag_r)),
+                        Asteroid {
+                            radius: frag_r,
+                            velocity: vel + normal * sign * FRAGMENT_SPEED,
+                            angular_velocity: ang * 1.5,
+                        },
+                    ));
+                }
+            }
+        }
+    }
+}
+
+/// Spawn fresh asteroids near the player whenever collisions reduce the count.
+fn refill_asteroids(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    assets: Res<AsteroidAssets>,
+    player: Res<Player>,
+    query: Query<(), With<Asteroid>>,
+) {
+    let count = query.iter().count();
+    if count >= ASTEROID_COUNT {
+        return;
+    }
+    let player_pos = player.0.lock().unwrap().position;
+    let mut rng = rand::thread_rng();
+    for _ in count..ASTEROID_COUNT {
+        let dir = loop {
+            let v = Vec3::new(
+                rng.gen_range(-1.0_f32..1.0),
+                rng.gen_range(-1.0_f32..1.0),
+                rng.gen_range(-1.0_f32..1.0),
+            );
+            if v.length_squared() > 1e-4 {
+                break v.normalize();
+            }
+        };
+        let dist = rng.gen_range(ASTEROID_MIN_DIST..ASTEROID_MAX_DIST);
+        let scale = rng.gen_range(0.5_f32..6.0_f32);
+        let rock_mesh = make_rock_mesh(&mut meshes, &mut rng);
+        let velocity = Vec3::new(
+            rng.gen_range(-1.5_f32..1.5),
+            rng.gen_range(-1.5_f32..1.5),
+            rng.gen_range(-1.5_f32..1.5),
+        );
+        let angular_velocity = Vec3::new(
+            rng.gen_range(-0.3_f32..0.3),
+            rng.gen_range(-0.3_f32..0.3),
+            rng.gen_range(-0.3_f32..0.3),
+        );
+        commands.spawn((
+            Mesh3d(rock_mesh),
+            MeshMaterial3d(assets.mat.clone()),
+            Transform::from_translation(player_pos + dir * dist).with_scale(Vec3::splat(scale)),
+            Asteroid {
+                radius: scale,
+                velocity,
+                angular_velocity,
+            },
+        ));
     }
 }
