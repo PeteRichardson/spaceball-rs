@@ -111,8 +111,10 @@ const WORMHOLE_RADIUS: f32 = 4.0;
 const PLAYER_DANGER_RADIUS: f32 = 10.0;
 /// Starting number of shields; each asteroid ingested by the wormhole costs one.
 const INITIAL_SHIELDS: u32 = 5;
-/// Asteroid radius below which a collision produces no fragments.
-const ASTEROID_MIN_RADIUS: f32 = 0.3;
+/// Asteroids at or above this radius are "large" and split into medium fragments.
+const LARGE_RADIUS: f32 = 3.0;
+/// Fixed radius of the medium fragments spawned when a large asteroid splits.
+const MEDIUM_RADIUS: f32 = 1.5;
 /// Speed added to each fragment along the collision normal on breakup (u/s).
 const FRAGMENT_SPEED: f32 = 3.0;
 /// Bullet travel speed (world units/sec).
@@ -604,7 +606,7 @@ fn spawn_asteroid_field(
             }
         };
         let dist = rng.gen_range(ASTEROID_MIN_DIST..ASTEROID_MAX_DIST);
-        let scale = rng.gen_range(0.5_f32..6.0_f32);
+        let scale = rng.gen_range(LARGE_RADIUS..6.0_f32);
         let rock_mesh = make_rock_mesh(meshes, rng);
         // Tangential orbital velocity: perpendicular to the radial direction at a
         // random fraction of circular orbital speed so the asteroid orbits rather
@@ -749,21 +751,20 @@ fn asteroid_collisions(
 
             let mut rng = rand::thread_rng();
 
-            // Each asteroid produces two fragments if it is large enough.
+            // Large asteroids split into two medium fragments; medium asteroids vanish.
             for &(pos, r, vel, ang) in &[(pos_a, r_a, vel_a, ang_a), (pos_b, r_b, vel_b, ang_b)] {
-                let frag_r = r * 0.55;
-                if frag_r < ASTEROID_MIN_RADIUS {
-                    continue; // too small — just vanishes
+                if r < LARGE_RADIUS {
+                    continue; // medium — no fragments
                 }
                 for &sign in &[-1.0_f32, 1.0_f32] {
                     let rock_mesh = make_rock_mesh(&mut meshes, &mut rng);
                     commands.spawn((
                         Mesh3d(rock_mesh),
                         MeshMaterial3d(assets.mat.clone()),
-                        Transform::from_translation(pos + normal * sign * frag_r * 1.5)
-                            .with_scale(Vec3::splat(frag_r)),
+                        Transform::from_translation(pos + normal * sign * MEDIUM_RADIUS * 1.5)
+                            .with_scale(Vec3::splat(MEDIUM_RADIUS)),
                         Asteroid {
-                            radius: frag_r,
+                            radius: MEDIUM_RADIUS,
                             velocity: vel + normal * sign * FRAGMENT_SPEED,
                             angular_velocity: ang * 1.5,
                         },
@@ -860,8 +861,8 @@ fn bullet_hits(
             asteroids_hit.push(a_entity);
             score.0 += 1;
 
-            let frag_r = a_r * 0.55;
-            if frag_r >= ASTEROID_MIN_RADIUS {
+            // Large asteroids split into two medium fragments; medium asteroids vanish.
+            if a_r >= LARGE_RADIUS {
                 let delta = a_pos - b_pos;
                 let normal = if delta.length_squared() > 1e-8 {
                     delta.normalize()
@@ -873,10 +874,10 @@ fn bullet_hits(
                     commands.spawn((
                         Mesh3d(rock_mesh),
                         MeshMaterial3d(assets.mat.clone()),
-                        Transform::from_translation(a_pos + normal * sign * frag_r * 1.5)
-                            .with_scale(Vec3::splat(frag_r)),
+                        Transform::from_translation(a_pos + normal * sign * MEDIUM_RADIUS * 1.5)
+                            .with_scale(Vec3::splat(MEDIUM_RADIUS)),
                         Asteroid {
-                            radius: frag_r,
+                            radius: MEDIUM_RADIUS,
                             velocity: a_vel + normal * sign * FRAGMENT_SPEED,
                             angular_velocity: a_ang * 1.5,
                         },
