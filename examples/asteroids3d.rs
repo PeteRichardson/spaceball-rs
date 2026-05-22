@@ -62,6 +62,17 @@
 //! (including all fragments) to clear a wave.  After a WAVE_CLEAR_PAUSE
 //! second pause a new wave begins with WAVE_INCREMENT extra asteroids.
 //! Asteroids that drift out of range simply vanish — they are not replaced.
+//!
+//! ── Stage 9 ─────────────────────────────────────────────────────────────────
+//! Wormhole gravity.
+//!
+//! A wormhole at the origin exerts gravitational attraction on all asteroids
+//! (a = GRAVITY / r²).  A small per-second velocity damping (ORBIT_DAMPING)
+//! causes orbits to slowly spiral inward.  Asteroids spawned with a tangential
+//! velocity slightly below circular orbital speed follow unique spiralling
+//! paths.  Asteroids that reach the wormhole are ingested, costing the player
+//! one shield.  Losing all shields ends the game.  A glowing sphere marks the
+//! wormhole; the player is repelled from its immediate vicinity.
 //! ────────────────────────────────────────────────────────────────────────────
 
 use std::sync::{Arc, Mutex};
@@ -88,8 +99,18 @@ const ASTEROID_MIN_DIST: f32 = 20.0;
 const ASTEROID_MAX_DIST: f32 = 80.0;
 /// Number of background stars.
 const STAR_COUNT: usize = 600;
-/// Asteroids beyond this distance from the player are despawned (not replaced).
-const ASTEROID_RESPAWN_DIST: f32 = 160.0;
+/// Safety despawn distance from origin; catches fragments that escape gravity.
+const ASTEROID_DESPAWN_DIST: f32 = 300.0;
+/// Gravitational acceleration constant: asteroid a = GRAVITY / r² toward origin.
+const GRAVITY: f32 = 800.0;
+/// Fractional velocity loss per second; causes orbits to slowly spiral inward.
+const ORBIT_DAMPING: f32 = 0.003;
+/// Asteroids inside this radius of the origin are ingested by the wormhole.
+const WORMHOLE_RADIUS: f32 = 4.0;
+/// Player position is clamped to at least this distance from the wormhole.
+const PLAYER_DANGER_RADIUS: f32 = 10.0;
+/// Starting number of shields; each asteroid ingested by the wormhole costs one.
+const INITIAL_SHIELDS: u32 = 5;
 /// Asteroid radius below which a collision produces no fragments.
 const ASTEROID_MIN_RADIUS: f32 = 0.3;
 /// Speed added to each fragment along the collision normal on breakup (u/s).
@@ -142,6 +163,14 @@ struct WaveText;
 #[derive(Component)]
 struct WaveClearText;
 
+/// Marker for the wormhole entity at the origin.
+#[derive(Component)]
+struct Wormhole;
+
+/// Marker for the shields HUD text node.
+#[derive(Component)]
+struct ShieldsText;
+
 /// Material handle kept alive so despawned asteroids can be respawned cheaply.
 #[derive(Resource)]
 struct AsteroidAssets {
@@ -165,6 +194,8 @@ struct WaveState {
     wave: u32,
     /// Seconds remaining until the next wave spawns; 0.0 while a wave is active.
     clear_timer: f32,
+    /// Set when all shields are gone; no new waves spawn after this point.
+    game_over: bool,
 }
 
 impl Default for WaveState {
@@ -172,9 +203,14 @@ impl Default for WaveState {
         WaveState {
             wave: 1,
             clear_timer: 0.0,
+            game_over: false,
         }
     }
 }
+
+/// Remaining shields — each asteroid ingested by the wormhole costs one.
+#[derive(Resource)]
+struct Shields(u32);
 
 // ── Shared player state ──────────────────────────────────────────────────────
 
@@ -189,7 +225,7 @@ struct PlayerState {
 impl Default for PlayerState {
     fn default() -> Self {
         PlayerState {
-            position: Vec3::ZERO,
+            position: Vec3::new(0.0, 0.0, 50.0),
             orientation: Quat::IDENTITY,
             fire_pressed: false,
         }
@@ -276,10 +312,12 @@ fn main() {
         .insert_resource(Player(player_state))
         .insert_resource(Score::default())
         .insert_resource(WaveState::default())
+        .insert_resource(Shields(INITIAL_SHIELDS))
         .add_systems(Startup, setup)
         .add_systems(
             Update,
             (
+                apply_player_repulsion,
                 update_camera,
                 update_hud,
                 drift_asteroids,
@@ -290,6 +328,7 @@ fn main() {
                 update_score_hud,
                 check_wave_clear,
                 update_wave_hud,
+                update_shields_hud,
             ),
         )
         .run();
@@ -318,7 +357,26 @@ fn setup(
         },
         Transform::from_rotation(Quat::from_euler(EulerRot::XYZ, -0.5, 0.5, 0.0)),
     ));
-
+    // ── Wormhole ────────────────────────────────────────────────────────────────
+    let wormhole_mat = materials.add(StandardMaterial {
+        emissive: LinearRgba::new(1.0, 0.1, 8.0, 1.0), // deep purple glow
+        ..default()
+    });
+    commands.spawn((
+        Mesh3d(meshes.add(Sphere::new(WORMHOLE_RADIUS))),
+        MeshMaterial3d(wormhole_mat),
+        Transform::default(),
+        Wormhole,
+    ));
+    commands.spawn((
+        PointLight {
+            color: Color::srgb(0.5, 0.1, 1.0),
+            intensity: 100_000.0,
+            range: 150.0,
+            ..default()
+        },
+        Transform::default(),
+    ));
     // ── Star field ─────────────────────────────────────────────────────────────
     // Stars are tiny emissive spheres placed very far away so they appear fixed.
     let star_mesh = meshes.add(Sphere::new(1.0));
@@ -427,6 +485,23 @@ fn setup(
         WaveText,
     ));
 
+    // ── Shields HUD ───────────────────────────────────────────────────────────
+    commands.spawn((
+        Text::new(format!("Shields: {INITIAL_SHIELDS}")),
+        TextFont {
+            font_size: 18.0,
+            ..default()
+        },
+        TextColor(Color::srgb(0.3, 0.8, 1.0)),
+        Node {
+            position_type: PositionType::Absolute,
+            top: Val::Px(84.0),
+            left: Val::Px(12.0),
+            ..default()
+        },
+        ShieldsText,
+    ));
+
     // ── Wave-clear overlay (hidden while a wave is active) ────────────────────
     commands
         .spawn(Node {
@@ -531,11 +606,20 @@ fn spawn_asteroid_field(
         let dist = rng.gen_range(ASTEROID_MIN_DIST..ASTEROID_MAX_DIST);
         let scale = rng.gen_range(0.5_f32..6.0_f32);
         let rock_mesh = make_rock_mesh(meshes, rng);
-        let velocity = Vec3::new(
-            rng.gen_range(-1.5_f32..1.5),
-            rng.gen_range(-1.5_f32..1.5),
-            rng.gen_range(-1.5_f32..1.5),
-        );
+        // Tangential orbital velocity: perpendicular to the radial direction at a
+        // random fraction of circular orbital speed so the asteroid orbits rather
+        // than falling straight into the wormhole.
+        let v_orb = (GRAVITY / dist).sqrt();
+        let orbital_fraction = rng.gen_range(0.60_f32..0.90_f32);
+        let up = if dir.dot(Vec3::Y).abs() < 0.9 {
+            Vec3::Y
+        } else {
+            Vec3::X
+        };
+        let tangent = dir.cross(up).normalize();
+        let bitangent = dir.cross(tangent);
+        let angle = rng.gen_range(0.0_f32..std::f32::consts::TAU);
+        let velocity = (tangent * angle.cos() + bitangent * angle.sin()) * v_orb * orbital_fraction;
         let angular_velocity = Vec3::new(
             rng.gen_range(-0.3_f32..0.3),
             rng.gen_range(-0.3_f32..0.3),
@@ -592,19 +676,32 @@ fn update_hud(
 
 fn drift_asteroids(
     mut commands: Commands,
-    player: Res<Player>,
     time: Res<Time>,
-    mut query: Query<(Entity, &mut Transform, &Asteroid)>,
+    mut shields: ResMut<Shields>,
+    mut query: Query<(Entity, &mut Transform, &mut Asteroid)>,
 ) {
     let dt = time.delta_secs();
-    let player_pos = player.0.lock().unwrap().position;
-
-    for (entity, mut transform, asteroid) in &mut query {
+    for (entity, mut transform, mut asteroid) in &mut query {
+        // Gravitational pull toward the wormhole at the origin.
+        let pos = transform.translation;
+        let r_sq = pos.length_squared();
+        let r = r_sq.sqrt();
+        if r > 0.01 {
+            // a = -pos.normalize() * GRAVITY / r²  =  -pos * GRAVITY / r³
+            asteroid.velocity += -pos * (GRAVITY / (r * r_sq)) * dt;
+        }
+        // Tidal damping slowly decays orbits into inward spirals.
+        asteroid.velocity *= 1.0 - ORBIT_DAMPING * dt;
+        // Translate and spin.
         transform.translation += asteroid.velocity * dt;
         let spin = Quat::from_scaled_axis(asteroid.angular_velocity * dt);
         transform.rotation = (transform.rotation * spin).normalize();
-        // Asteroids that drift too far simply vanish (not replaced).
-        if (transform.translation - player_pos).length() > ASTEROID_RESPAWN_DIST {
+        // Ingest if inside the wormhole.
+        if transform.translation.length() < WORMHOLE_RADIUS {
+            commands.entity(entity).despawn();
+            shields.0 = shields.0.saturating_sub(1);
+        } else if transform.translation.length() > ASTEROID_DESPAWN_DIST {
+            // Safety net for any fragment whose velocity exceeds escape speed.
             commands.entity(entity).despawn();
         }
     }
@@ -810,32 +907,42 @@ fn check_wave_clear(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     assets: Res<AsteroidAssets>,
-    player: Res<Player>,
     time: Res<Time>,
     mut wave: ResMut<WaveState>,
+    shields: Res<Shields>,
     asteroids: Query<(), With<Asteroid>>,
     mut clear_msg: Query<(&mut Text, &mut Visibility), With<WaveClearText>>,
 ) {
+    // When all shields are gone the game is over — stop spawning waves.
+    if shields.0 == 0 {
+        if !wave.game_over {
+            wave.game_over = true;
+            if let Ok((mut t, mut vis)) = clear_msg.get_single_mut() {
+                *t = Text::new("GAME OVER");
+                *vis = Visibility::Inherited;
+            }
+        }
+        return;
+    }
+
     if wave.clear_timer > 0.0 {
         // Counting down between waves.
         wave.clear_timer -= time.delta_secs();
         if wave.clear_timer <= 0.0 {
             wave.clear_timer = 0.0;
             wave.wave += 1;
-            // Hide the clear message.
             if let Ok((_, mut vis)) = clear_msg.get_single_mut() {
                 *vis = Visibility::Hidden;
             }
-            // Spawn the next wave centred on the player.
+            // New waves always spawn around the wormhole.
             let count = wave_asteroid_count(wave.wave);
-            let center = player.0.lock().unwrap().position;
             let mut rng = rand::thread_rng();
             spawn_asteroid_field(
                 &mut commands,
                 &mut meshes,
                 &assets.mat,
                 &mut rng,
-                center,
+                Vec3::ZERO,
                 count,
             );
         }
@@ -856,5 +963,30 @@ fn update_wave_hud(wave: Res<WaveState>, mut query: Query<&mut Text, With<WaveTe
     }
     if let Ok(mut t) = query.get_single_mut() {
         *t = Text::new(format!("Wave: {}", wave.wave));
+    }
+}
+
+/// Push the player back to at least PLAYER_DANGER_RADIUS from the wormhole.
+fn apply_player_repulsion(player: Res<Player>) {
+    let mut state = player.0.lock().unwrap();
+    let pos = state.position;
+    let r_sq = pos.length_squared();
+    let limit = PLAYER_DANGER_RADIUS;
+    if r_sq < limit * limit {
+        state.position = if r_sq > 0.001 {
+            pos.normalize() * limit
+        } else {
+            Vec3::Z * limit
+        };
+    }
+}
+
+/// Keep the shields HUD in sync with the Shields resource.
+fn update_shields_hud(shields: Res<Shields>, mut query: Query<&mut Text, With<ShieldsText>>) {
+    if !shields.is_changed() {
+        return;
+    }
+    if let Ok(mut t) = query.get_single_mut() {
+        *t = Text::new(format!("Shields: {}", shields.0));
     }
 }
