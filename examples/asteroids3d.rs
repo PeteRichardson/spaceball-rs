@@ -80,7 +80,7 @@ use std::sync::{Arc, Mutex};
 use bevy::prelude::*;
 use bevy::render::mesh::VertexAttributeValues;
 use rand::{Rng, SeedableRng, rngs::SmallRng};
-use spaceball_rs::{Packet, Spaceball};
+use spaceball_rs::{SpaceballPacket, Spaceball};
 
 const DEFAULT_PORT: &str = "/dev/cu.usbserial-AJ03ACPV";
 
@@ -253,7 +253,7 @@ fn main() {
                 let mut prev_fire = false;
                 for packet in sm.packets() {
                     match packet {
-                        Ok(Packet::Ball(b)) => {
+                        Ok(SpaceballPacket::Ball(b)) => {
                             let [tx, ty, tz] = b.translation;
                             let [rx, ry, rz] = b.rotation;
                             let mut s = state_bg.lock().unwrap();
@@ -278,7 +278,7 @@ fn main() {
                             );
                             s.orientation = (s.orientation * delta).normalize();
                         }
-                        Ok(Packet::Key(k)) => {
+                        Ok(SpaceballPacket::Key(k)) => {
                             if k.pick {
                                 *state_bg.lock().unwrap() = PlayerState::default();
                                 prev_fire = false;

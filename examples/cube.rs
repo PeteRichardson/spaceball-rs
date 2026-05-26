@@ -1,4 +1,4 @@
-use spaceball_rs::{Packet, Spaceball};
+use spaceball_rs::{SpaceballPacket, Spaceball};
 use std::sync::{Arc, Mutex};
 use three_d::*;
 
@@ -38,7 +38,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     std::thread::spawn(move || {
         for packet in sm.packets() {
             match packet {
-                Ok(Packet::Ball(b)) => {
+                Ok(SpaceballPacket::Ball(b)) => {
                     let [tx, ty, tz] = b.translation;
                     let [rx, ry, rz] = b.rotation;
                     let mut p = pose_bg.lock().unwrap();
@@ -49,7 +49,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     p.ry += ry as f32 * R_SCALE;
                     p.rz += rz as f32 * R_SCALE;
                 }
-                Ok(Packet::Key(k)) => {
+                Ok(SpaceballPacket::Key(k)) => {
                     // Button 1 resets the pose.
                     if k.buttons[0] {
                         *pose_bg.lock().unwrap() = Pose {

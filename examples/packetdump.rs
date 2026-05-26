@@ -1,4 +1,4 @@
-use spaceball_rs::{Packet, Spaceball};
+use spaceball_rs::{SpaceballPacket, Spaceball};
 
 const DEFAULT_PORT: &str = "/dev/cu.usbserial-AJ03ACPV";
 
@@ -15,7 +15,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     for packet in sm.packets() {
         match packet? {
-            Packet::Key(k) => {
+            SpaceballPacket::Key(k) => {
                 let btns: String = k
                     .buttons
                     .iter()
@@ -34,7 +34,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 );
             }
-            Packet::Ball(b) => {
+            SpaceballPacket::Ball(b) => {
                 let [tx, ty, tz] = b.translation;
                 let [rx, ry, rz] = b.rotation;
                 println!(
@@ -42,7 +42,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     b.period, tx, ty, tz, rx, ry, rz
                 );
             }
-            Packet::Unknown(raw) => {
+            SpaceballPacket::Unknown(raw) => {
                 print!("UNK  ");
                 for byte in &raw {
                     print!(" {:02x}", byte);

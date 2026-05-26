@@ -53,9 +53,9 @@ impl Spaceball {
         self.port.by_ref().bytes()
     }
 
-    /// Returns an iterator of decoded [`Packet`]s from the Spaceball.
-    pub fn packets(&mut self) -> PacketIter<impl Iterator<Item = Result<u8, io::Error>> + '_> {
-        PacketIter {
+    /// Returns an iterator of decoded [`SpaceballPacket`]s from the Spaceball.
+    pub fn packets(&mut self) -> SpaceballPacketIter<impl Iterator<Item = Result<u8, io::Error>> + '_> {
+        SpaceballPacketIter {
             inner: self.port.by_ref().bytes(),
         }
     }
@@ -67,16 +67,23 @@ impl Spaceball {
 
 /// A key press/release event. Sent whenever any button state changes.
 #[derive(Debug, Clone)]
-pub struct KeyEvent {
+pub struct SpaceballKeyEvent {
     /// True if the pick button (beneath the ball) is pressed.
     pub pick: bool,
     /// States of buttons 1–8; `buttons[0]` is button 1, `buttons[7]` is button 8.
     pub buttons: [bool; 8],
 }
 
+impl ButtonState for SpaceballKeyEvent {
+    fn pressed(&self, i: usize) -> bool {
+        self.buttons.get(i).copied().unwrap_or(false)
+    }
+    fn count(&self) -> usize { 8 }
+}
+
 /// A ball displacement event. Sent while the ball is in motion.
 #[derive(Debug, Clone)]
-pub struct BallEvent {
+pub struct SpaceballBallEvent {
     /// Time since the previous ball event, in units of 1/16 millisecond.
     pub period: u16,
     /// Translation displacement [x, y, z] as signed 16-bit integers.
@@ -87,24 +94,24 @@ pub struct BallEvent {
 
 /// A decoded packet from the Spaceball.
 #[derive(Debug)]
-pub enum Packet {
-    Key(KeyEvent),
-    Ball(BallEvent),
+pub enum SpaceballPacket {
+    Key(SpaceballKeyEvent),
+    Ball(SpaceballBallEvent),
     /// Any packet type not specifically handled. Holds the raw decoded bytes
     /// (including the leading type byte, excluding the terminating `\r`).
     Unknown(Vec<u8>),
 }
 
 // ---------------------------------------------------------------------------
-// PacketIter
+// SpaceballPacketIter
 // ---------------------------------------------------------------------------
 
-pub struct PacketIter<I> {
+pub struct SpaceballPacketIter<I> {
     inner: I,
 }
 
-impl<I: Iterator<Item = Result<u8, io::Error>>> Iterator for PacketIter<I> {
-    type Item = Result<Packet, io::Error>;
+impl<I: Iterator<Item = Result<u8, io::Error>>> Iterator for SpaceballPacketIter<I> {
+    type Item = Result<SpaceballPacket, io::Error>;
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {
@@ -138,24 +145,87 @@ impl<I: Iterator<Item = Result<u8, io::Error>>> Iterator for PacketIter<I> {
 }
 
 // ---------------------------------------------------------------------------
-// SixDofDevice / Probeable — stubs expanded in Task 2
+// SixDofDevice / Probeable
 // ---------------------------------------------------------------------------
 
 unsafe impl Send for Spaceball {}
 
 impl SixDofDevice for Spaceball {
     fn events(&mut self) -> Box<dyn Iterator<Item = Result<DeviceEvent, io::Error>> + '_> {
-        Box::new(std::iter::empty())
+        let mut last_period = 800u16; // ~50 ms default (20 Hz)
+        Box::new(self.packets().filter_map(move |pkt| match pkt {
+            Err(e) => Some(Err(e)),
+            Ok(SpaceballPacket::Ball(b)) => {
+                if b.period > 0 { last_period = b.period; }
+                let period_secs = last_period as f32 / 16_000.0;
+                let norm = |v: i16| (v as f32 / period_secs) / 320_000.0;
+                Some(Ok(DeviceEvent::Motion(NormalizedMotion {
+                    translation: [
+                        norm(b.translation[0]),
+                        norm(b.translation[1]),
+                        norm(b.translation[2]),
+                    ],
+                    rotation: [
+                        norm(b.rotation[0]),
+                        norm(b.rotation[1]),
+                        norm(b.rotation[2]),
+                    ],
+                })))
+            }
+            Ok(SpaceballPacket::Key(k)) => {
+                Some(Ok(DeviceEvent::Button(Box::new(k))))
+            }
+            Ok(SpaceballPacket::Unknown(_)) => None,
+        }))
     }
 }
 
 impl Probeable for Spaceball {
+    /// Open `path` and confirm a Spaceball is attached.
+    ///
+    /// Sends `?\r`; if the reply starts with `!` it's a SpaceOrb — return Err.
+    /// No reply within 200 ms means assume Spaceball (it ignores `?` quietly).
     fn probe(path: &str) -> Result<Self, Error> {
-        Self::open(path)
+        let mut port = serialport::new(path, 9600)
+            .data_bits(serialport::DataBits::Eight)
+            .parity(serialport::Parity::None)
+            .stop_bits(serialport::StopBits::One)
+            .flow_control(serialport::FlowControl::None)
+            .timeout(Duration::from_millis(500))
+            .open()?;
+
+        let _ = port.write_request_to_send(true);
+        let _ = port.write_data_terminal_ready(true);
+
+        // Wait up to 500 ms for a spontaneous power-up byte.
+        let mut buf = [0u8; 1];
+        match port.read(&mut buf) {
+            Ok(1) if buf[0] == b'@' => {
+                // Spaceball power-up message — confirmed.
+            }
+            Ok(1) if buf[0] == b'R' => {
+                // SpaceOrb power-up — not a Spaceball.
+                return Err(Error::NoDeviceFound);
+            }
+            _ => {
+                // Already powered: send `?\r` and check for SpaceOrb `!` reply.
+                port.write_all(b"?\r")?;
+                port.set_timeout(Duration::from_millis(200))?;
+                match port.read(&mut buf) {
+                    Ok(1) if buf[0] == b'!' => {
+                        return Err(Error::NoDeviceFound); // SpaceOrb replied
+                    }
+                    _ => {} // silence or `?` echo — treat as Spaceball
+                }
+            }
+        }
+
+        // Confirmed (or assumed) Spaceball — run full initialization.
+        Spaceball::open(path)
     }
 }
 
-fn parse_packet(raw: Vec<u8>) -> Packet {
+pub(crate) fn parse_packet(raw: Vec<u8>) -> SpaceballPacket {
     match raw.first() {
         // K packet: K + 2 data bytes
         // byte1: 010<pick><b8><b7><b6><b5>
@@ -163,7 +233,7 @@ fn parse_packet(raw: Vec<u8>) -> Packet {
         Some(b'K') if raw.len() == 3 => {
             let b1 = raw[1];
             let b2 = raw[2];
-            Packet::Key(KeyEvent {
+            SpaceballPacket::Key(SpaceballKeyEvent {
                 pick: (b1 & 0x10) != 0,
                 buttons: [
                     (b2 & 0x01) != 0, // button 1
@@ -181,7 +251,7 @@ fn parse_packet(raw: Vec<u8>) -> Packet {
         // period(u16) tx(i16) ty(i16) tz(i16) rx(i16) ry(i16) rz(i16)
         Some(b'D') if raw.len() == 15 => {
             let d = &raw[1..];
-            Packet::Ball(BallEvent {
+            SpaceballPacket::Ball(SpaceballBallEvent {
                 period: u16::from_be_bytes([d[0], d[1]]),
                 translation: [
                     i16::from_be_bytes([d[2], d[3]]),
@@ -195,6 +265,101 @@ fn parse_packet(raw: Vec<u8>) -> Packet {
                 ],
             })
         }
-        _ => Packet::Unknown(raw),
+        _ => SpaceballPacket::Unknown(raw),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // K packet: K + byte1 + byte2
+    // byte1: 010<pick><b8><b7><b6><b5>
+    // byte2: 0100<b4><b3><b2><b1>
+    fn make_key_raw(pick: bool, buttons: [bool; 8]) -> Vec<u8> {
+        let b1: u8 = 0x40
+            | if pick          { 0x10 } else { 0 }
+            | if buttons[7]    { 0x08 } else { 0 }  // b8
+            | if buttons[6]    { 0x04 } else { 0 }  // b7
+            | if buttons[5]    { 0x02 } else { 0 }  // b6
+            | if buttons[4]    { 0x01 } else { 0 }; // b5
+        let b2: u8 = 0x40
+            | if buttons[3] { 0x08 } else { 0 }  // b4
+            | if buttons[2] { 0x04 } else { 0 }  // b3
+            | if buttons[1] { 0x02 } else { 0 }  // b2
+            | if buttons[0] { 0x01 } else { 0 }; // b1
+        vec![b'K', b1, b2]
+    }
+
+    #[test]
+    fn key_packet_no_buttons() {
+        let raw = make_key_raw(false, [false; 8]);
+        let pkt = parse_packet(raw);
+        if let SpaceballPacket::Key(k) = pkt {
+            assert!(!k.pick);
+            assert_eq!(k.buttons, [false; 8]);
+        } else {
+            panic!("expected Key packet");
+        }
+    }
+
+    #[test]
+    fn key_packet_pick_and_button1() {
+        let mut btns = [false; 8];
+        btns[0] = true;
+        let raw = make_key_raw(true, btns);
+        let pkt = parse_packet(raw);
+        if let SpaceballPacket::Key(k) = pkt {
+            assert!(k.pick);
+            assert!(k.buttons[0]);
+            assert!(!k.buttons[1]);
+        } else {
+            panic!("expected Key packet");
+        }
+    }
+
+    #[test]
+    fn button_state_trait() {
+        let k = SpaceballKeyEvent {
+            pick: false,
+            buttons: [true, false, true, false, false, false, false, false],
+        };
+        assert!(k.pressed(0));
+        assert!(!k.pressed(1));
+        assert!(k.pressed(2));
+        assert_eq!(k.count(), 8);
+        assert!(k.any_pressed());
+    }
+
+    #[test]
+    fn ball_packet_zeros() {
+        // D + period(0,0) + tx(0,0) + ty(0,0) + tz(0,0) + rx(0,0) + ry(0,0) + rz(0,0)
+        let raw = vec![b'D', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        let pkt = parse_packet(raw);
+        if let SpaceballPacket::Ball(b) = pkt {
+            assert_eq!(b.period, 0);
+            assert_eq!(b.translation, [0, 0, 0]);
+            assert_eq!(b.rotation, [0, 0, 0]);
+        } else {
+            panic!("expected Ball packet");
+        }
+    }
+
+    #[test]
+    fn ball_packet_values() {
+        // period = 800 (0x0320), tx = 1000 (0x03E8)
+        let period: u16 = 800;
+        let tx: i16 = 1000;
+        let mut raw = vec![b'D'];
+        raw.extend_from_slice(&period.to_be_bytes());
+        raw.extend_from_slice(&tx.to_be_bytes());
+        raw.extend_from_slice(&[0u8; 10]); // ty, tz, rx, ry, rz
+        let pkt = parse_packet(raw);
+        if let SpaceballPacket::Ball(b) = pkt {
+            assert_eq!(b.period, 800);
+            assert_eq!(b.translation[0], 1000);
+        } else {
+            panic!("expected Ball packet");
+        }
     }
 }

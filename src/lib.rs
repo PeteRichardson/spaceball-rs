@@ -2,7 +2,7 @@ mod spaceball;
 mod spaceorb;
 
 pub use spaceball::{
-    Spaceball, BallEvent, KeyEvent, Packet, PacketIter,
+    Spaceball, SpaceballBallEvent, SpaceballKeyEvent, SpaceballPacket,
 };
 pub use spaceorb::{
     SpaceOrb, SpaceOrbBallEvent, SpaceOrbKeyEvent, SpaceOrbPacket,
