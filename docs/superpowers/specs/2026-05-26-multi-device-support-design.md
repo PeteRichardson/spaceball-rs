@@ -13,12 +13,13 @@ Add SpaceOrb 360 support to `spaceball-rs` alongside the existing Spaceball (100
 
 ```
 src/
-  lib.rs        — SixDofDevice trait, NormalizedMotion, ButtonState, DeviceEvent, probe(), re-exports
+  lib.rs        — SixDofDevice, Probeable, NormalizedMotion, ButtonState, DeviceEvent,
+                  probe(), find(), first(), Error, re-exports
   spaceball.rs  — Spaceball struct, SpaceballPacket and related types
   spaceorb.rs   — SpaceOrb struct, SpaceOrbPacket and related types
 ```
 
-Each device module is self-contained: its own `open()`, packet iterator, and `impl SixDofDevice`. `lib.rs` stays thin.
+Each device module is self-contained: its own `open()`, `impl Probeable`, and `impl SixDofDevice`. `lib.rs` stays thin. Adding a future device type requires only a new module file, `impl Probeable`, `impl SixDofDevice`, and updating the generic `probe()` free function in `lib.rs` by one line.
 
 ---
 
@@ -51,6 +52,40 @@ pub trait SixDofDevice: Send {
 
 /// Auto-detect the device on `path` and return it as a trait object.
 pub fn probe(path: &str) -> Result<Box<dyn SixDofDevice>, Error>;
+
+/// Scan all serial ports; return every recognized device.
+pub fn find() -> Vec<Box<dyn SixDofDevice>>;
+
+/// Scan all serial ports; return the first recognized device.
+pub fn first() -> Result<Box<dyn SixDofDevice>, Error>;
+
+/// Provides type-specific find() and first() with default impls.
+/// Implement probe(path) in each device module; find/first come for free.
+pub trait Probeable: Sized + SixDofDevice {
+    /// Try to open and identify this specific device type at `path`.
+    /// Returns Ok(Self) if confirmed, Err otherwise (wrong device or port failure).
+    fn probe(path: &str) -> Result<Self, Error>;
+
+    fn find() -> Vec<Self> {
+        serialport::available_ports().unwrap_or_default()
+            .into_iter()
+            .filter_map(|info| Self::probe(&info.port_name).ok())
+            .collect()
+    }
+
+    fn first() -> Result<Self, Error> {
+        serialport::available_ports().unwrap_or_default()
+            .into_iter()
+            .find_map(|info| Self::probe(&info.port_name).ok())
+            .ok_or(Error::NoDeviceFound)
+    }
+}
+
+pub enum Error {
+    Serial(serialport::Error),
+    Io(io::Error),
+    NoDeviceFound,
+}
 ```
 
 ---
@@ -83,6 +118,8 @@ impl Spaceball {
     pub fn packets(&mut self) -> impl Iterator<Item = Result<SpaceballPacket, io::Error>> + '_
 }
 impl SixDofDevice for Spaceball { … }
+impl Probeable for Spaceball { fn probe(path: &str) -> Result<Self, Error> { … } }
+// Spaceball::find() and Spaceball::first() come from Probeable default impls.
 ```
 
 Packets are CR-terminated with `^`-escape encoding (unchanged from today). Initialization sequence sent on `open()` is unchanged.
@@ -119,6 +156,8 @@ impl SpaceOrb {
     pub fn packets(&mut self) -> impl Iterator<Item = Result<SpaceOrbPacket, io::Error>> + '_
 }
 impl SixDofDevice for SpaceOrb { … }
+impl Probeable for SpaceOrb { fn probe(path: &str) -> Result<Self, Error> { … } }
+// SpaceOrb::find() and SpaceOrb::first() come from Probeable default impls.
 ```
 
 **Wire format:** packets terminated by the start of the next packet's header byte (or a standalone `\r`). Each packet ends with an XOR checksum byte (top bit set). The `D` packet's 9 data bytes encode six 10-bit values XOR'd with `"SpaceWare"`.
