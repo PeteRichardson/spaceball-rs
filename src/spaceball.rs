@@ -157,19 +157,10 @@ impl SixDofDevice for Spaceball {
             Err(e) => Some(Err(e)),
             Ok(SpaceballPacket::Ball(b)) => {
                 if b.period > 0 { last_period = b.period; }
-                let period_secs = last_period as f32 / 16_000.0;
-                let norm = |v: i16| (v as f32 / period_secs) / 320_000.0;
+                let norm = |v: i16| normalize_spaceball_delta(v, last_period);
                 Some(Ok(DeviceEvent::Motion(NormalizedMotion {
-                    translation: [
-                        norm(b.translation[0]),
-                        norm(b.translation[1]),
-                        norm(b.translation[2]),
-                    ],
-                    rotation: [
-                        norm(b.rotation[0]),
-                        norm(b.rotation[1]),
-                        norm(b.rotation[2]),
-                    ],
+                    translation: b.translation.map(norm),
+                    rotation: b.rotation.map(norm),
                 })))
             }
             Ok(SpaceballPacket::Key(k)) => {
@@ -195,13 +186,15 @@ impl Probeable for Spaceball {
             .open()?;
 
         let _ = port.write_request_to_send(true);
-        let _ = port.write_data_terminal_ready(true);
+        // DTR not needed for Spaceball; omitted to match open() behaviour
 
         // Wait up to 500 ms for a spontaneous power-up byte.
         let mut buf = [0u8; 1];
         match port.read(&mut buf) {
             Ok(1) if buf[0] == b'@' => {
                 // Spaceball power-up message — confirmed.
+                drop(port); // release before re-opening
+                return Spaceball::open(path);
             }
             Ok(1) if buf[0] == b'R' => {
                 // SpaceOrb power-up — not a Spaceball.
@@ -220,9 +213,18 @@ impl Probeable for Spaceball {
             }
         }
 
+        drop(port); // release before re-opening
         // Confirmed (or assumed) Spaceball — run full initialization.
         Spaceball::open(path)
     }
+}
+
+/// Convert a single Spaceball displacement delta to a normalized rate value.
+/// `period_units` is in 1/16 ms units (800 = 50 ms = 20 Hz default).
+/// Returns a value in [-1.0, 1.0] where 1.0 = full-deflection sustained rate.
+pub(crate) fn normalize_spaceball_delta(delta: i16, period_units: u16) -> f32 {
+    let period_secs = period_units as f32 / 16_000.0;
+    (delta as f32 / period_secs) / 320_000.0
 }
 
 pub(crate) fn parse_packet(raw: Vec<u8>) -> SpaceballPacket {
@@ -361,5 +363,24 @@ mod tests {
         } else {
             panic!("expected Ball packet");
         }
+    }
+
+    #[test]
+    fn normalization_full_deflection_at_20hz() {
+        // period=800 (50ms at 20Hz), delta=16000 (full deflection) → ~1.0
+        let v = normalize_spaceball_delta(16000, 800);
+        assert!((v - 1.0).abs() < 0.01, "expected ~1.0, got {v}");
+    }
+
+    #[test]
+    fn normalization_negative_deflection() {
+        let v = normalize_spaceball_delta(-16000, 800);
+        assert!((v + 1.0).abs() < 0.01, "expected ~-1.0, got {v}");
+    }
+
+    #[test]
+    fn normalization_zero_delta() {
+        let v = normalize_spaceball_delta(0, 800);
+        assert_eq!(v, 0.0);
     }
 }
