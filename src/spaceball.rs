@@ -1,4 +1,4 @@
-use crate::{DeviceEvent, Error, Probeable, SixDofDevice};
+use crate::{ButtonState, DeviceEvent, Error, NormalizedMotion, Probeable, SixDofDevice};
 use std::io::{self, Read};
 use std::time::Duration;
 
