@@ -20,6 +20,8 @@ cargo run --example packetdump [spaceorb] [/dev/cu.usbserial-...]
 cargo run --example hexdump    [spaceorb] [/dev/cu.usbserial-...]
 cargo run --example cube       [/dev/cu.usbserial-...]
 cargo run --example asteroids3d [/dev/cu.usbserial-...]
+cargo run --example sbprobe list
+cargo run --example sbprobe watch
 ```
 
 ## Architecture
