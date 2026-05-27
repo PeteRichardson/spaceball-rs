@@ -80,13 +80,11 @@ use std::sync::{Arc, Mutex};
 use bevy::prelude::*;
 use bevy::render::mesh::VertexAttributeValues;
 use rand::{Rng, SeedableRng, rngs::SmallRng};
-use spaceball_rs::{SpaceballPacket, Spaceball};
+use spaceball_rs::{DeviceEvent, first, probe};
 
-const DEFAULT_PORT: &str = "/dev/cu.usbserial-AJ03ACPV";
-
-/// Raw Spaceball values reach ±~16 000 at full deflection.
-const T_SCALE: f32 = 10.0 / 16_000.0; // world units per raw unit
-const R_SCALE: f32 = std::f32::consts::PI / 16_000.0; // radians per raw unit
+/// Normalized motion values are in [-1, 1] per second at full deflection.
+const T_SCALE: f32 = 10.0; // world units per normalized unit
+const R_SCALE: f32 = std::f32::consts::PI; // radians per normalized unit
 
 /// Starting number of asteroids for wave 1.
 const INITIAL_WAVE_SIZE: usize = 5;
@@ -240,64 +238,55 @@ struct Player(Arc<Mutex<PlayerState>>);
 // ── Entry point ──────────────────────────────────────────────────────────────
 
 fn main() {
-    let port = std::env::args()
-        .nth(1)
-        .unwrap_or_else(|| DEFAULT_PORT.to_string());
-
     let player_state = Arc::new(Mutex::new(PlayerState::default()));
 
-    match Spaceball::open(&port) {
-        Ok(mut sm) => {
+    let device_result = match std::env::args().nth(1) {
+        Some(path) => probe(&path),
+        None => first(),
+    };
+    match device_result {
+        Ok(mut device) => {
             let state_bg = Arc::clone(&player_state);
             std::thread::spawn(move || {
                 let mut prev_fire = false;
-                for packet in sm.packets() {
-                    match packet {
-                        Ok(SpaceballPacket::Ball(b)) => {
-                            let [tx, ty, tz] = b.translation;
-                            let [rx, ry, rz] = b.rotation;
+                for event in device.events() {
+                    match event {
+                        Ok(DeviceEvent::Motion(m)) => {
                             let mut s = state_bg.lock().unwrap();
-
                             // Move along the camera's own local axes.
-                            // tz is negated so that pushing the ball moves you
+                            // translation[2] is negated so that pushing the ball moves you
                             // forward (toward asteroids) and pulling backs away.
                             let world_move = s.orientation.mul_vec3(Vec3::new(
-                                tx as f32 * T_SCALE,
-                                ty as f32 * T_SCALE,
-                                -(tz as f32) * T_SCALE,
+                                m.translation[0] * T_SCALE,
+                                m.translation[1] * T_SCALE,
+                                -m.translation[2] * T_SCALE,
                             ));
                             s.position += world_move;
-
                             // Rotate in the camera's local frame (intrinsic
                             // yaw → pitch → roll keeps the horizon intuitive).
                             let delta = Quat::from_euler(
                                 EulerRot::YXZ,
-                                ry as f32 * R_SCALE,
-                                rx as f32 * R_SCALE,
-                                rz as f32 * R_SCALE,
+                                m.rotation[1] * R_SCALE,
+                                m.rotation[0] * R_SCALE,
+                                m.rotation[2] * R_SCALE,
                             );
                             s.orientation = (s.orientation * delta).normalize();
                         }
-                        Ok(SpaceballPacket::Key(k)) => {
-                            if k.pick {
-                                *state_bg.lock().unwrap() = PlayerState::default();
-                                prev_fire = false;
-                            } else {
-                                let fire_now = k.buttons[0];
-                                if fire_now && !prev_fire {
-                                    state_bg.lock().unwrap().fire_pressed = true;
-                                }
-                                prev_fire = fire_now;
+                        Ok(DeviceEvent::Button(k)) => {
+                            let fire_now = k.pressed(0);
+                            if fire_now && !prev_fire {
+                                state_bg.lock().unwrap().fire_pressed = true;
                             }
+                            prev_fire = fire_now;
                         }
                         _ => {}
                     }
                 }
             });
-            eprintln!("Spaceball connected on {port}");
+            eprintln!("6DOF device connected");
         }
         Err(e) => {
-            eprintln!("Spaceball not available ({e}); camera is static");
+            eprintln!("No 6DOF device ({e}); camera is static");
         }
     }
 

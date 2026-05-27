@@ -145,6 +145,11 @@ impl SpaceOrb {
     pub fn packets(&mut self) -> SpaceOrbPacketIter<impl io::Read + '_> {
         SpaceOrbPacketIter { inner: &mut *self.port }
     }
+
+    pub fn bytes(&mut self) -> impl Iterator<Item = Result<u8, io::Error>> + '_ {
+        use std::io::Read;
+        self.port.by_ref().bytes()
+    }
 }
 
 // Safety: Box<dyn SerialPort> is not Send by default, but the underlying TTYPort is safe to send across threads.

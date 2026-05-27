@@ -1,36 +1,53 @@
 use pretty_hex::*;
-use spaceball_rs::Spaceball;
+use spaceball_rs::{SpaceOrb, Spaceball};
 
 const DEFAULT_PORT: &str = "/dev/cu.usbserial-AJ03ACPV";
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let path = std::env::args()
-        .nth(1)
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let device = if args.iter().any(|a| a == "spaceorb") { "spaceorb" } else { "spaceball" };
+    let path = args.iter()
+        .find(|a| *a != "spaceball" && *a != "spaceorb")
+        .cloned()
         .unwrap_or_else(|| DEFAULT_PORT.to_string());
 
-    eprintln!("Connecting to Spaceball at {path} ...");
+    eprintln!("Connecting to {device} at {path} ...");
 
-    let mut sm = Spaceball::open(&path)?;
+    let cfg = HexConfig { title: false, ..HexConfig::default() };
 
-    eprintln!("Initialized. Reading bytes (Ctrl-C to quit):\n");
+    if device == "spaceorb" {
+        let mut orb = SpaceOrb::open(&path)?;
+        eprintln!("Initialized. Reading bytes (Ctrl-C to quit):\n");
+        dump_bytes(orb.bytes(), cfg);
+    } else {
+        let mut sb = Spaceball::open(&path)?;
+        eprintln!("Initialized. Reading bytes (Ctrl-C to quit):\n");
+        dump_bytes(sb.bytes(), cfg);
+    }
+    Ok(())
+}
 
-    let cfg = HexConfig {
-        title: false,
-        ..HexConfig::default()
-    };
-
-    loop {
-        let mut packet = Vec::new();
-        for b in sm.bytes() {
-            match b {
-                Ok(b'\r') => break,
-                Ok(byte) => packet.push(byte),
-                Err(e) if e.kind() == std::io::ErrorKind::TimedOut => break,
-                Err(e) => return Err(Box::new(e)),
+fn dump_bytes(
+    bytes: impl Iterator<Item = Result<u8, std::io::Error>>,
+    cfg: HexConfig,
+) {
+    let mut packet = Vec::new();
+    for b in bytes {
+        match b {
+            Ok(b'\r') => {
+                if !packet.is_empty() {
+                    println!("{:?}", packet.hex_conf(cfg));
+                    packet.clear();
+                }
             }
-        }
-        if !packet.is_empty() {
-            println!("{:?}", packet.hex_conf(cfg));
+            Ok(byte) => packet.push(byte),
+            Err(e) if e.kind() == std::io::ErrorKind::TimedOut => {
+                if !packet.is_empty() {
+                    println!("{:?}", packet.hex_conf(cfg));
+                    packet.clear();
+                }
+            }
+            Err(_) => break,
         }
     }
 }

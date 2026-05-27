@@ -1,14 +1,7 @@
-use spaceball_rs::{SpaceballPacket, Spaceball};
+use spaceball_rs::{DeviceEvent, SixDofDevice, first, probe};
 use std::sync::{Arc, Mutex};
 use three_d::*;
 
-const DEFAULT_PORT: &str = "/dev/cu.usbserial-AJ03ACPV";
-
-/// Scale raw ±16000 Spaceball values to world-space deltas per event.
-const T_SCALE: f32 = 3.0 / 16_000.0;
-const R_SCALE: f32 = std::f32::consts::TAU / 16_000.0;
-
-/// Accumulated 6DOF pose driven by the Spaceball.
 #[derive(Clone, Copy, Default)]
 struct Pose {
     tx: f32,
@@ -20,12 +13,11 @@ struct Pose {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let port = std::env::args()
-        .nth(1)
-        .unwrap_or_else(|| DEFAULT_PORT.to_string());
-
-    // Open the Spaceball before spawning the thread so errors surface early.
-    let mut sm = Spaceball::open(&port)?;
+    let path = std::env::args().nth(1);
+    let mut device: Box<dyn SixDofDevice> = match path {
+        Some(ref p) => probe(p)?,
+        None => first()?,
+    };
 
     let pose = Arc::new(Mutex::new(Pose {
         rx: 25_f32.to_radians(),
@@ -34,30 +26,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }));
     let pose_bg = Arc::clone(&pose);
 
-    // Read Spaceball packets on a background thread and accumulate pose.
     std::thread::spawn(move || {
-        for packet in sm.packets() {
-            match packet {
-                Ok(SpaceballPacket::Ball(b)) => {
-                    let [tx, ty, tz] = b.translation;
-                    let [rx, ry, rz] = b.rotation;
+        for event in device.events() {
+            match event {
+                Ok(DeviceEvent::Motion(m)) => {
                     let mut p = pose_bg.lock().unwrap();
-                    p.tx += tx as f32 * T_SCALE;
-                    p.ty += ty as f32 * T_SCALE;
-                    p.tz += tz as f32 * T_SCALE;
-                    p.rx += rx as f32 * R_SCALE;
-                    p.ry += ry as f32 * R_SCALE;
-                    p.rz += rz as f32 * R_SCALE;
+                    p.tx += m.translation[0] * 3.0;
+                    p.ty += m.translation[1] * 3.0;
+                    p.tz += m.translation[2] * 3.0;
+                    p.rx += m.rotation[0] * std::f32::consts::TAU;
+                    p.ry += m.rotation[1] * std::f32::consts::TAU;
+                    p.rz += m.rotation[2] * std::f32::consts::TAU;
                 }
-                Ok(SpaceballPacket::Key(k)) => {
-                    // Button 1 resets the pose.
-                    if k.buttons[0] {
-                        *pose_bg.lock().unwrap() = Pose {
-                            rx: 25_f32.to_radians(),
-                            ry: 35_f32.to_radians(),
-                            ..Default::default()
-                        };
-                    }
+                Ok(DeviceEvent::Button(k)) if k.pressed(0) => {
+                    *pose_bg.lock().unwrap() = Pose {
+                        rx: 25_f32.to_radians(),
+                        ry: 35_f32.to_radians(),
+                        ..Default::default()
+                    };
                 }
                 _ => {}
             }
@@ -103,7 +89,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     window.render_loop(move |mut frame_input| {
         camera.set_viewport(frame_input.viewport);
 
-        // Snapshot the pose; release the lock before rendering.
         let p = *pose.lock().unwrap();
 
         cube.geometry.set_transformation(
@@ -120,7 +105,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             frame_input.device_pixel_ratio,
             |ctx| {
                 egui::SidePanel::left("state_panel").show(ctx, |ui| {
-                    ui.heading("Spaceball");
+                    ui.heading("6DOF Device");
                     ui.separator();
 
                     ui.label("Translation");
@@ -137,7 +122,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     ));
 
                     ui.separator();
-                    ui.label("Button 1: reset");
+                    ui.label("Button 1/A: reset");
                 });
             },
         );
