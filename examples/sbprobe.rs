@@ -3,11 +3,25 @@ use std::collections::HashMap;
 use std::time::Instant;
 
 fn probe_port(path: &str) -> &'static str {
-    todo!()
+    if SpaceOrb::probe(path).is_ok() {
+        return "SpaceOrb";
+    }
+    if Spaceball::probe(path).is_ok() {
+        return "Spaceball";
+    }
+    "?"
 }
 
 fn cmd_list() {
-    todo!()
+    let ports = serialport::available_ports().unwrap_or_default();
+    if ports.is_empty() {
+        println!("(no serial ports found)");
+        return;
+    }
+    for info in &ports {
+        let label = probe_port(&info.port_name);
+        println!("{:<9}  {}", label, info.port_name);
+    }
 }
 
 fn cmd_watch() {
