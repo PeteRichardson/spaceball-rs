@@ -147,6 +147,7 @@ impl SpaceOrb {
     }
 }
 
+// Safety: Box<dyn SerialPort> is not Send by default, but the underlying TTYPort is safe to send across threads.
 unsafe impl Send for SpaceOrb {}
 
 // ── SpaceOrbPacketIter ────────────────────────────────────────────────────────
@@ -166,7 +167,7 @@ impl<R: io::Read> Iterator for SpaceOrbPacketIter<R> {
                 match self.inner.read(&mut hdr) {
                     Err(e) if e.kind() == io::ErrorKind::TimedOut => continue,
                     Err(e) => return Some(Err(e)),
-                    Ok(0) => continue,
+                    Ok(0) => return None,
                     Ok(_) => break,
                 }
             }
@@ -223,7 +224,7 @@ fn read_exact_orb<R: io::Read>(r: &mut R, n: usize) -> Option<Vec<u8>> {
         match r.read(&mut buf[pos..]) {
             Err(e) if e.kind() == io::ErrorKind::TimedOut => continue,
             Err(_) => return None,
-            Ok(0) => continue,
+            Ok(0) => return None,
             Ok(got) => pos += got,
         }
     }
@@ -237,7 +238,7 @@ fn read_until_xor<R: io::Read>(r: &mut R) -> Option<Vec<u8>> {
         match r.read(&mut byte) {
             Err(e) if e.kind() == io::ErrorKind::TimedOut => continue,
             Err(_) => return None,
-            Ok(0) => continue,
+            Ok(0) => return None,
             Ok(_) => {
                 buf.push(byte[0]);
                 if byte[0] & 0x80 != 0 {
