@@ -202,14 +202,14 @@ impl Probeable for Spaceball {
                 return Err(Error::NoDeviceFound);
             }
             _ => {
-                // Already powered: send `?\r` and check for SpaceOrb `!` reply.
+                // Already powered: send `?\r` — a real Spaceball echoes `?` back.
+                // Require that echo; silence or any other response is not a Spaceball.
                 port.write_all(b"?\r")?;
-                port.set_timeout(Duration::from_millis(200))?;
+                port.set_timeout(Duration::from_millis(500))?;
                 match port.read(&mut buf) {
-                    Ok(1) if buf[0] == b'!' => {
-                        return Err(Error::NoDeviceFound); // SpaceOrb replied
-                    }
-                    _ => {} // silence or `?` echo — treat as Spaceball
+                    Ok(1) if buf[0] == b'?' => {} // Spaceball echo — confirmed
+                    Ok(1) if buf[0] == b'!' => return Err(Error::NoDeviceFound), // SpaceOrb
+                    _ => return Err(Error::NoDeviceFound), // silence or unexpected
                 }
             }
         }

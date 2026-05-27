@@ -13,8 +13,7 @@ fn candidate_ports() -> Vec<serialport::SerialPortInfo> {
         .collect()
 }
 
-// Note: any port that opens but stays silent is labeled "Spaceball" — the Spaceball
-// protocol treats silence as confirmation. "?" only appears when the port cannot be opened.
+// Returns "SpaceOrb", "Spaceball", or "?" (unrecognized / no response).
 fn probe_port(path: &str) -> &'static str {
     if SpaceOrb::probe(path).is_ok() {
         return "SpaceOrb";
