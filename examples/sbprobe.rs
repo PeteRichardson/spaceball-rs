@@ -1,6 +1,6 @@
 use spaceball_rs::{Probeable, Spaceball, SpaceOrb};
-use std::collections::HashMap;
-use std::time::Instant;
+use std::collections::{HashMap, HashSet};
+use std::time::{Duration, Instant};
 
 fn probe_port(path: &str) -> &'static str {
     if SpaceOrb::probe(path).is_ok() {
@@ -37,28 +37,28 @@ fn cmd_watch() {
     }
 
     loop {
-        std::thread::sleep(std::time::Duration::from_secs(1));
+        std::thread::sleep(Duration::from_secs(1));
 
-        let current: HashMap<String, ()> = serialport::available_ports()
+        let current: HashSet<String> = serialport::available_ports()
             .unwrap_or_default()
             .into_iter()
-            .map(|info| (info.port_name, ()))
+            .map(|info| info.port_name)
             .collect();
 
-        let secs = start.elapsed().as_secs();
-
         // New ports: probe and add.
-        for path in current.keys() {
+        for path in &current {
             if !known.contains_key(path) {
                 let label = probe_port(path);
+                let secs = start.elapsed().as_secs();
                 println!("[{:>4}s] + {:<9}  {}", secs, label, path);
                 known.insert(path.clone(), label);
             }
         }
 
         // Removed ports: print and drop.
+        let secs = start.elapsed().as_secs();
         let gone: Vec<String> = known.keys()
-            .filter(|p| !current.contains_key(*p))
+            .filter(|p| !current.contains(*p))
             .cloned()
             .collect();
         for path in gone {
