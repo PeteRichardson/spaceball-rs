@@ -279,42 +279,53 @@ impl SixDofDevice for SpaceOrb {
 impl Probeable for SpaceOrb {
     fn probe(path: &str) -> Result<Self, Error> {
         use std::io::{Read, Write};
-        use std::time::Duration;
+        use std::time::{Duration, Instant};
 
+        // Short per-read timeout so the deadline loop stays responsive.
         let mut port = serialport::new(path, 9600)
             .data_bits(serialport::DataBits::Eight)
             .parity(serialport::Parity::None)
             .stop_bits(serialport::StopBits::One)
             .flow_control(serialport::FlowControl::None)
-            .timeout(Duration::from_millis(500))
+            .timeout(Duration::from_millis(100))
             .open()?;
 
         let _ = port.write_request_to_send(true);
         let _ = port.write_data_terminal_ready(true);
 
+        // The SpaceOrb takes ~1 s after power-on before sending its startup
+        // sequence: a bare <CR> followed by the 'R' reset packet.  Poll for
+        // up to 1.5 s so we don't time out before it speaks.
+        let deadline = Instant::now() + Duration::from_millis(1500);
         let mut buf = [0u8; 1];
-        match port.read(&mut buf) {
-            Ok(1) if buf[0] == b'R' => {
-                // SpaceOrb power-up reset packet — confirmed.
-                drop(port);
-                return SpaceOrb::open(path);
-            }
-            Ok(1) if buf[0] == b'@' => {
-                // Spaceball power-up — not a SpaceOrb.
-                return Err(Error::NoDeviceFound);
-            }
-            _ => {
-                // Already powered: send `?` and look for `!` reply.
-                port.write_all(b"?\r")?;
-                port.set_timeout(Duration::from_millis(200))?;
-                match port.read(&mut buf) {
-                    Ok(1) if buf[0] == b'!' => {
+        loop {
+            match port.read(&mut buf) {
+                Ok(1) => match buf[0] {
+                    b'R' | b'!' => {
+                        // SpaceOrb startup packet — confirmed.
                         drop(port);
                         return SpaceOrb::open(path);
                     }
-                    _ => return Err(Error::NoDeviceFound),
-                }
+                    b'@' => return Err(Error::NoDeviceFound), // Spaceball
+                    _ => {} // skip leading \r and other startup bytes
+                },
+                _ => {} // read timeout — keep polling until deadline
             }
+            if Instant::now() >= deadline {
+                break;
+            }
+        }
+
+        // No startup bytes within 1.5 s — device may already be running.
+        // Send a query and check for the '!' response.
+        port.write_all(b"?\r")?;
+        port.set_timeout(Duration::from_millis(500))?;
+        match port.read(&mut buf) {
+            Ok(1) if buf[0] == b'!' => {
+                drop(port);
+                SpaceOrb::open(path)
+            }
+            _ => Err(Error::NoDeviceFound),
         }
     }
 }
