@@ -8,41 +8,41 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 # Build the library
 cargo build
 
-# Build a specific example
-cargo build --example asteroids3d
-cargo build --example cube
-
-# Run an example (serial port is optional; falls back to a default USB-serial path)
-cargo run --example asteroids3d [/dev/cu.usbserial-...]
-cargo run --example packetdump [/dev/cu.usbserial-...]
-cargo run --example hexdump    [/dev/cu.usbserial-...]
-
-# Check without building
+# Check without building (fast)
 cargo check
+cargo check --examples
 
-# Run tests (none exist yet)
+# Run tests
 cargo test
+
+# Run an example
+cargo run --example packetdump [spaceorb] [/dev/cu.usbserial-...]
+cargo run --example hexdump    [spaceorb] [/dev/cu.usbserial-...]
+cargo run --example cube       [/dev/cu.usbserial-...]
+cargo run --example asteroids3d [/dev/cu.usbserial-...]
 ```
 
 ## Architecture
 
-`spaceball-rs` is a Rust library for communicating with a Spaceball 6-DOF input device over a serial port. The entire library lives in `src/lib.rs`.
+`spaceball-rs` is a Rust library supporting two 6DOF input devices over serial port.
 
-**Library (`src/lib.rs`):**
-- `Spaceball::open(path)` — opens the serial port at 9600 8N1, sends the initialization sequence, flushes the echo, and returns a ready-to-use device handle.
-- `Spaceball::packets()` — returns a `PacketIter` that yields decoded `Packet` values.
-- `Spaceball::bytes()` — raw byte iterator for diagnostics.
-- `PacketIter` decodes the binary-mode wire format: packets are CR-terminated, with four `^`-escape sequences for XON/XOFF/CR/`^` embedded in data bytes.
-- `Packet` is an enum with `Key(KeyEvent)`, `Ball(BallEvent)`, and `Unknown(Vec<u8>)`.
-- `BallEvent` carries `period` (timing), `translation [x,y,z]`, and `rotation [x,y,z]` as signed 16-bit values (raw range ±~16 000 at full deflection).
-- `KeyEvent` carries `pick` (bottom button) and `buttons[0..7]` (buttons 1–8).
+**`src/lib.rs`** — thin hub. Defines shared types (`Error`, `NormalizedMotion`, `ButtonState`, `DeviceEvent`) and two traits:
+- `SixDofDevice` — object-safe trait with `events()` returning a normalized `DeviceEvent` stream. Both devices implement it. Use `probe(path)`, `find()`, or `first()` to get a `Box<dyn SixDofDevice>` without knowing the device type.
+- `Probeable` — gives concrete types `find()` and `first()` for free. Implement one method (`probe(path)`) per device; port scanning comes from the default impls.
+
+Free functions: `probe(path)` auto-detects the device on a specific port; `find()` and `first()` scan all serial ports.
+
+**`src/spaceball.rs`** — Spaceball 1003/2003/3003. CR-terminated packets with `^`-escape encoding. `SpaceballBallEvent` carries 16-bit displacement deltas + period; `SpaceballKeyEvent` has 8 buttons + pick. `open()` sends the initialization sequence.
+
+**`src/spaceorb.rs`** — SpaceOrb 360. Packets bounded by the next header byte (top bit = 0) or `\r`. Each packet ends with an XOR checksum byte. `SpaceOrbBallEvent` carries decoded 10-bit force/torque values (±511); `SpaceOrbKeyEvent` has 6 buttons (A–F, named accessors `.a()`–`.f()`) + rezero. `open()` asserts RTS + DTR (power lines).
+
+**Normalization (`SixDofDevice::events()`):** both devices yield `NormalizedMotion { translation: [f32;3], rotation: [f32;3] }` scaled to [-1, 1] per second. Apply as `pos += motion.translation * dt`. Spaceball uses the `period` field to convert deltas to rates; SpaceOrb divides force by 511.
+
+**Threading pattern:** move the `Box<dyn SixDofDevice>` (or concrete device) to a background thread; call `events()` or `packets()` there and share state via `Arc<Mutex<_>>`.
 
 **Examples:**
-- `hexdump.rs` — raw packet bytes in hex, useful for debugging the wire format.
-- `packetdump.rs` — decoded `Key`/`Ball`/`Unknown` events printed to stdout.
-- `cube.rs` — 3D spinning cube controlled by the Spaceball, rendered with `three-d` + egui.
-- `asteroids3d.rs` — full Asteroids game built with Bevy (9 incremental stages documented at the top of the file). Spaceball drives a 6-DOF FPS camera; button 1 fires. Stages add asteroid drift, procedural meshes, splitting, bullets, waves, and wormhole gravity.
+- `packetdump.rs` / `hexdump.rs` — diagnostic. Pass `spaceorb` as first arg to select device (default: spaceball). Pass port path as second arg.
+- `cube.rs` — 3D cube with `three-d`. Calls `probe(path)` or `first()` automatically.
+- `asteroids3d.rs` — full Asteroids game with Bevy. Uses `probe()`/`first()` so it works with either device. Stage history documented at top of file.
 
-**Threading pattern:** The Spaceball is blocking-I/O by nature. The `cube` and `asteroids3d` examples move `Spaceball` onto a background thread behind an `Arc<Mutex<_>>`, reading packets there and sharing state with the render thread.
-
-**Protocol reference:** `docs/sbprotocol.txt` and `docs/SpaceBall_2003-3003_Protocol.pdf` contain the full Spaceball 2003/3003 serial protocol spec.
+**Protocol reference:** `docs/sbprotocol.txt` (Spaceball), `docs/orb_protocol.txt` (SpaceOrb 360).
