@@ -99,8 +99,7 @@ pub trait Probeable: Sized + SixDofDevice {
 
     /// Scan all serial ports and return every device of this type found.
     fn find() -> Vec<Self> {
-        serialport::available_ports()
-            .unwrap_or_default()
+        candidate_ports()
             .into_iter()
             .filter_map(|info| Self::probe(&info.port_name).ok())
             .collect()
@@ -108,12 +107,33 @@ pub trait Probeable: Sized + SixDofDevice {
 
     /// Scan all serial ports and return the first device of this type found.
     fn first() -> Result<Self, Error> {
-        serialport::available_ports()
-            .unwrap_or_default()
+        candidate_ports()
             .into_iter()
             .find_map(|info| Self::probe(&info.port_name).ok())
             .ok_or(Error::NoDeviceFound)
     }
+}
+
+// ── Port scanning helper ──────────────────────────────────────────────────────
+
+/// Serial ports worth probing for 6DOF devices.
+///
+/// Two filters applied:
+/// - Skip `/dev/tty.*` on macOS: every physical port appears as both
+///   `/dev/cu.NAME` (call-out) and `/dev/tty.NAME` (dial-in, blocks on DCD).
+///   The dot distinguishes macOS `tty.NAME` from Linux `ttyUSB0` / `ttyACM0`,
+///   which must not be filtered.
+/// - Skip non-USB ports: Spaceball and SpaceOrb connect via USB-serial adapters;
+///   Bluetooth, PCI, and unknown ports are never the right target.
+fn candidate_ports() -> Vec<serialport::SerialPortInfo> {
+    serialport::available_ports()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|p| {
+            !p.port_name.contains("/dev/tty.")
+                && matches!(p.port_type, serialport::SerialPortType::UsbPort(_))
+        })
+        .collect()
 }
 
 // ── Free functions ────────────────────────────────────────────────────────────
@@ -133,8 +153,7 @@ pub fn probe(path: &str) -> Result<Box<dyn SixDofDevice>, Error> {
 
 /// Scan all serial ports and return every recognized 6DOF device.
 pub fn find() -> Vec<Box<dyn SixDofDevice>> {
-    serialport::available_ports()
-        .unwrap_or_default()
+    candidate_ports()
         .into_iter()
         .filter_map(|info| probe(&info.port_name).ok())
         .collect()
@@ -142,8 +161,7 @@ pub fn find() -> Vec<Box<dyn SixDofDevice>> {
 
 /// Scan all serial ports and return the first recognized 6DOF device.
 pub fn first() -> Result<Box<dyn SixDofDevice>, Error> {
-    serialport::available_ports()
-        .unwrap_or_default()
+    candidate_ports()
         .into_iter()
         .find_map(|info| probe(&info.port_name).ok())
         .ok_or(Error::NoDeviceFound)

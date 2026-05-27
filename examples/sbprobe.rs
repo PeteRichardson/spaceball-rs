@@ -2,6 +2,17 @@ use spaceball_rs::{Probeable, Spaceball, SpaceOrb};
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
+fn candidate_ports() -> Vec<serialport::SerialPortInfo> {
+    serialport::available_ports()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|p| {
+            !p.port_name.contains("/dev/tty.")
+                && matches!(p.port_type, serialport::SerialPortType::UsbPort(_))
+        })
+        .collect()
+}
+
 // Note: any port that opens but stays silent is labeled "Spaceball" — the Spaceball
 // protocol treats silence as confirmation. "?" only appears when the port cannot be opened.
 fn probe_port(path: &str) -> &'static str {
@@ -15,7 +26,7 @@ fn probe_port(path: &str) -> &'static str {
 }
 
 fn cmd_list() {
-    let ports = serialport::available_ports().unwrap_or_default();
+    let ports = candidate_ports();
     if ports.is_empty() {
         println!("(no serial ports found)");
         return;
@@ -31,7 +42,7 @@ fn cmd_watch() {
     let mut known: HashMap<String, &'static str> = HashMap::new();
 
     // Initial scan — treat all ports present at startup as "just connected".
-    for info in serialport::available_ports().unwrap_or_default() {
+    for info in candidate_ports() {
         let label = probe_port(&info.port_name);
         let secs = start.elapsed().as_secs();
         println!("[{:>4}s] + {:<9}  {}", secs, label, info.port_name);
@@ -41,8 +52,7 @@ fn cmd_watch() {
     loop {
         std::thread::sleep(Duration::from_secs(1));
 
-        let Ok(port_list) = serialport::available_ports() else { continue };
-        let current: HashSet<String> = port_list.into_iter().map(|i| i.port_name).collect();
+        let current: HashSet<String> = candidate_ports().into_iter().map(|i| i.port_name).collect();
 
         // New ports: probe and add.
         for path in &current {
