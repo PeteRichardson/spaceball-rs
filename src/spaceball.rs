@@ -21,7 +21,7 @@ pub struct Spaceball {
 
 impl Spaceball {
     /// Open a connection to the Spaceball at the given serial port path,
-    /// initialize it, and return a ready-to-read `Spacemouse`.
+    /// initialize it, and return a ready-to-read `Spaceball`.
     pub fn open(path: &str) -> Result<Self, Error> {
         let mut port = serialport::new(path, 9600)
             .data_bits(serialport::DataBits::Eight)
@@ -148,6 +148,7 @@ impl<I: Iterator<Item = Result<u8, io::Error>>> Iterator for SpaceballPacketIter
 // SixDofDevice / Probeable
 // ---------------------------------------------------------------------------
 
+// Safety: Box<dyn SerialPort> is not Send by default, but the underlying TTYPort is safe to send across threads.
 unsafe impl Send for Spaceball {}
 
 impl SixDofDevice for Spaceball {
