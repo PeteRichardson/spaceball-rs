@@ -2,6 +2,8 @@ use spaceball_rs::{Probeable, Spaceball, SpaceOrb};
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
+// Note: any port that opens but stays silent is labeled "Spaceball" — the Spaceball
+// protocol treats silence as confirmation. "?" only appears when the port cannot be opened.
 fn probe_port(path: &str) -> &'static str {
     if SpaceOrb::probe(path).is_ok() {
         return "SpaceOrb";
@@ -39,11 +41,8 @@ fn cmd_watch() {
     loop {
         std::thread::sleep(Duration::from_secs(1));
 
-        let current: HashSet<String> = serialport::available_ports()
-            .unwrap_or_default()
-            .into_iter()
-            .map(|info| info.port_name)
-            .collect();
+        let Ok(port_list) = serialport::available_ports() else { continue };
+        let current: HashSet<String> = port_list.into_iter().map(|i| i.port_name).collect();
 
         // New ports: probe and add.
         for path in &current {
