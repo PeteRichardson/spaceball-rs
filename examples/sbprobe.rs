@@ -25,7 +25,47 @@ fn cmd_list() {
 }
 
 fn cmd_watch() {
-    todo!()
+    let start = Instant::now();
+    let mut known: HashMap<String, &'static str> = HashMap::new();
+
+    // Initial scan — treat all ports present at startup as "just connected".
+    for info in serialport::available_ports().unwrap_or_default() {
+        let label = probe_port(&info.port_name);
+        let secs = start.elapsed().as_secs();
+        println!("[{:>4}s] + {:<9}  {}", secs, label, info.port_name);
+        known.insert(info.port_name, label);
+    }
+
+    loop {
+        std::thread::sleep(std::time::Duration::from_secs(1));
+
+        let current: HashMap<String, ()> = serialport::available_ports()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|info| (info.port_name, ()))
+            .collect();
+
+        let secs = start.elapsed().as_secs();
+
+        // New ports: probe and add.
+        for path in current.keys() {
+            if !known.contains_key(path) {
+                let label = probe_port(path);
+                println!("[{:>4}s] + {:<9}  {}", secs, label, path);
+                known.insert(path.clone(), label);
+            }
+        }
+
+        // Removed ports: print and drop.
+        let gone: Vec<String> = known.keys()
+            .filter(|p| !current.contains_key(*p))
+            .cloned()
+            .collect();
+        for path in gone {
+            let label = known.remove(&path).unwrap();
+            println!("[{:>4}s] - {:<9}  {}", secs, label, path);
+        }
+    }
 }
 
 fn main() {
