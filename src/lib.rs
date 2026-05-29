@@ -1,5 +1,6 @@
 mod spaceball;
 mod spaceorb;
+mod input_mode;
 
 pub use spaceball::{
     Spaceball, SpaceballBallEvent, SpaceballKeyEvent, SpaceballPacket,
@@ -73,6 +74,8 @@ pub enum DeviceEvent {
     Motion(NormalizedMotion),
     Button(Box<dyn ButtonState + Send>),
 }
+
+pub use input_mode::{InputMode, ScaledMotion, process};
 
 // ── SixDofDevice trait ───────────────────────────────────────────────────────
 
