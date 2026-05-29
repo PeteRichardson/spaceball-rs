@@ -83,8 +83,9 @@ use rand::{Rng, SeedableRng, rngs::SmallRng};
 use spaceball_rs::{DeviceEvent, first, probe};
 
 /// Normalized motion values are in [-1, 1] per second at full deflection.
-const T_SCALE: f32 = 10.0; // world units per normalized unit
-const R_SCALE: f32 = std::f32::consts::PI; // radians per normalized unit
+const T_SCALE: f32 = 1.0; // world units per normalized unit
+//const R_SCALE: f32 = std::f32::consts::PI; // radians per normalized unit
+const R_SCALE: f32 = 0.1;
 
 /// Starting number of asteroids for wave 1.
 const INITIAL_WAVE_SIZE: usize = 5;

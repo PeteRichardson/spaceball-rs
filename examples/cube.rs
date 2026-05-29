@@ -34,9 +34,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     p.tx += m.translation[0] * 3.0;
                     p.ty += m.translation[1] * 3.0;
                     p.tz += m.translation[2] * 3.0;
-                    p.rx += m.rotation[0] * std::f32::consts::TAU;
-                    p.ry += m.rotation[1] * std::f32::consts::TAU;
-                    p.rz += m.rotation[2] * std::f32::consts::TAU;
+                    p.rx += m.rotation[0] / std::f32::consts::E;
+                    p.ry += m.rotation[1] / std::f32::consts::E;
+                    p.rz += m.rotation[2] / std::f32::consts::E;
                 }
                 Ok(DeviceEvent::Button(k)) if k.pressed(0) => {
                     *pose_bg.lock().unwrap() = Pose {
