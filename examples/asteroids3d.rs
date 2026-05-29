@@ -76,16 +76,12 @@
 //! ────────────────────────────────────────────────────────────────────────────
 
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use bevy::prelude::*;
 use bevy::render::mesh::VertexAttributeValues;
 use rand::{Rng, SeedableRng, rngs::SmallRng};
-use spaceball_rs::{DeviceEvent, first, probe};
-
-/// Normalized motion values are in [-1, 1] per second at full deflection.
-const T_SCALE: f32 = 1.0; // world units per normalized unit
-//const R_SCALE: f32 = std::f32::consts::PI; // radians per normalized unit
-const R_SCALE: f32 = 0.1;
+use spaceball_rs::{DeviceEvent, InputMode, first, probe, process};
 
 /// Starting number of asteroids for wave 1.
 const INITIAL_WAVE_SIZE: usize = 5;
@@ -249,27 +245,32 @@ fn main() {
         Ok(mut device) => {
             let state_bg = Arc::clone(&player_state);
             std::thread::spawn(move || {
+                let mode = InputMode::camera_control_default();
+                let mut last = Instant::now();
                 let mut prev_fire = false;
                 for event in device.events() {
                     match event {
                         Ok(DeviceEvent::Motion(m)) => {
+                            let dt = last.elapsed().as_secs_f32();
+                            last = Instant::now();
+                            let scaled = process(&m, &mode);
                             let mut s = state_bg.lock().unwrap();
                             // Move along the camera's own local axes.
                             // translation[2] is negated so that pushing the ball moves you
                             // forward (toward asteroids) and pulling backs away.
                             let world_move = s.orientation.mul_vec3(Vec3::new(
-                                m.translation[0] * T_SCALE,
-                                m.translation[1] * T_SCALE,
-                                -m.translation[2] * T_SCALE,
+                                scaled.translation[0] * dt,
+                                scaled.translation[1] * dt,
+                                -scaled.translation[2] * dt,
                             ));
                             s.position += world_move;
                             // Rotate in the camera's local frame (intrinsic
                             // yaw → pitch → roll keeps the horizon intuitive).
                             let delta = Quat::from_euler(
                                 EulerRot::YXZ,
-                                m.rotation[1] * R_SCALE,
-                                m.rotation[0] * R_SCALE,
-                                m.rotation[2] * R_SCALE,
+                                scaled.rotation[1] * dt,
+                                scaled.rotation[0] * dt,
+                                scaled.rotation[2] * dt,
                             );
                             s.orientation = (s.orientation * delta).normalize();
                         }
