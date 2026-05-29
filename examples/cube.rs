@@ -1,5 +1,6 @@
-use spaceball_rs::{DeviceEvent, SixDofDevice, first, probe};
+use spaceball_rs::{DeviceEvent, InputMode, SixDofDevice, first, probe, process};
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 use three_d::*;
 
 #[derive(Clone, Copy, Default)]
@@ -27,16 +28,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let pose_bg = Arc::clone(&pose);
 
     std::thread::spawn(move || {
+        let mode = InputMode::object_manipulation_default();
+        let mut last = Instant::now();
         for event in device.events() {
             match event {
                 Ok(DeviceEvent::Motion(m)) => {
+                    let dt = last.elapsed().as_secs_f32();
+                    last = Instant::now();
+                    let scaled = process(&m, &mode);
                     let mut p = pose_bg.lock().unwrap();
-                    p.tx += m.translation[0] * 3.0;
-                    p.ty += m.translation[1] * 3.0;
-                    p.tz += m.translation[2] * 3.0;
-                    p.rx += m.rotation[0] / std::f32::consts::E;
-                    p.ry += m.rotation[1] / std::f32::consts::E;
-                    p.rz += m.rotation[2] / std::f32::consts::E;
+                    p.tx += scaled.translation[0] * dt;
+                    p.ty += scaled.translation[1] * dt;
+                    p.tz += scaled.translation[2] * dt;
+                    p.rx += scaled.rotation[0] * dt;
+                    p.ry += scaled.rotation[1] * dt;
+                    p.rz += scaled.rotation[2] * dt;
                 }
                 Ok(DeviceEvent::Button(k)) if k.pressed(0) => {
                     *pose_bg.lock().unwrap() = Pose {
