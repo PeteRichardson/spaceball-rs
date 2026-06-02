@@ -94,6 +94,22 @@ Fixed 9-character width, left-aligned, space-padded. In Phase 1 the value is alw
 
 ## Library Additions
 
+### `device_id()` on `SixDofDevice`
+
+Add to the `SixDofDevice` trait:
+
+```rust
+/// Short display name for this device type, e.g. `"SpaceOrb"` or `"Spaceball"`.
+/// Used as the device-ID column in dump output and probe listings.
+fn device_id(&self) -> &'static str;
+```
+
+Each concrete type returns its own fixed string. This is the single source of truth for device names across all examples — `sbdump` uses it for its device-ID column; `sbprobe` should be updated to call it instead of hardcoding the strings in its local `probe_port()` helper.
+
+**TODO (sbprobe):** Update `sbprobe`'s `probe_port()` to use `SixDofDevice::device_id()` so device names stay in sync with `sbdump`. Currently `sbprobe` returns `"SpaceOrb"` / `"Spaceball"` / `"?"` as literals; those strings should come from the trait instead.
+
+---
+
 ### `RawPacket<P>`
 
 ```rust
@@ -197,5 +213,7 @@ examples/sbdump.rs
 - Device ID column is fixed-width (9 chars) with space padding
 - Clear error messages for all failure cases; non-zero exit on error
 - `cargo check --examples` passes
+- `device_id()` added to `SixDofDevice` trait and implemented by both device types
 - `packets_with_bytes()` and `events_with_bytes()` added to both device types
 - `RawPacket<P>` re-exported from `lib.rs`
+- **TODO:** update `sbprobe` to use `SixDofDevice::device_id()` instead of its local hardcoded strings
