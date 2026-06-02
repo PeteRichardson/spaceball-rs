@@ -152,6 +152,8 @@ impl<I: Iterator<Item = Result<u8, io::Error>>> Iterator for SpaceballPacketIter
 unsafe impl Send for Spaceball {}
 
 impl SixDofDevice for Spaceball {
+    fn device_id(&self) -> &'static str { "Spaceball" }
+
     fn events(&mut self) -> Box<dyn Iterator<Item = Result<DeviceEvent, io::Error>> + '_> {
         let mut last_period = 800u16; // ~50 ms default (20 Hz)
         Box::new(self.packets().filter_map(move |pkt| match pkt {
@@ -383,5 +385,18 @@ mod tests {
     fn normalization_zero_delta() {
         let v = normalize_spaceball_delta(0, 800);
         assert_eq!(v, 0.0);
+    }
+
+    #[test]
+    fn device_id_is_spaceball() {
+        struct FakeSb;
+        impl SixDofDevice for FakeSb {
+            fn device_id(&self) -> &'static str { "Spaceball" }
+            fn events(&mut self) -> Box<dyn Iterator<Item = Result<DeviceEvent, std::io::Error>> + '_> {
+                Box::new(std::iter::empty())
+            }
+        }
+        let d = FakeSb;
+        assert_eq!(d.device_id(), "Spaceball");
     }
 }

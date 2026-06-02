@@ -84,6 +84,10 @@ pub use input_mode::{InputMode, ScaledMotion, process};
 /// Use [`probe`], [`find`], or [`first`] to obtain a `Box<dyn SixDofDevice>`
 /// without knowing which device is attached.
 pub trait SixDofDevice: Send {
+    /// Short human-readable device type name, e.g. `"Spaceball"` or `"SpaceOrb"`.
+    /// Used as the device-ID column in dump output and probe listings.
+    fn device_id(&self) -> &'static str;
+
     /// Returns an iterator of device-agnostic events. Ball motion events carry
     /// a [`NormalizedMotion`] in [-1, 1] per second; apply as `pos += v * dt`.
     fn events(&mut self) -> Box<dyn Iterator<Item = Result<DeviceEvent, io::Error>> + '_>;

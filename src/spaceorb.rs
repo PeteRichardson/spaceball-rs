@@ -257,6 +257,8 @@ fn read_until_xor<R: io::Read>(r: &mut R) -> Option<Vec<u8>> {
 // ── SixDofDevice ─────────────────────────────────────────────────────────────
 
 impl SixDofDevice for SpaceOrb {
+    fn device_id(&self) -> &'static str { "SpaceOrb" }
+
     fn events(&mut self) -> Box<dyn Iterator<Item = Result<DeviceEvent, io::Error>> + '_> {
         Box::new(self.packets().filter_map(|pkt| match pkt {
             Err(e) => Some(Err(e)),

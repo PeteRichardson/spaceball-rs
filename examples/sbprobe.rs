@@ -1,4 +1,3 @@
-use spaceball_rs::{Probeable, Spaceball, SpaceOrb};
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
@@ -13,15 +12,11 @@ fn candidate_ports() -> Vec<serialport::SerialPortInfo> {
         .collect()
 }
 
-// Returns "SpaceOrb", "Spaceball", or "?" (unrecognized / no response).
 fn probe_port(path: &str) -> &'static str {
-    if SpaceOrb::probe(path).is_ok() {
-        return "SpaceOrb";
+    match spaceball_rs::probe(path) {
+        Ok(device) => device.device_id(),
+        Err(_) => "?",
     }
-    if Spaceball::probe(path).is_ok() {
-        return "Spaceball";
-    }
-    "?"
 }
 
 fn cmd_list() {
