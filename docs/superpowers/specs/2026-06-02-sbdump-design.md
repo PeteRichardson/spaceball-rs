@@ -38,30 +38,37 @@ sbdump [PATH] [--spaceorb | --spaceball] [--hex] [-e | --events]
 *(Examples below show both device types for illustration; Phase 1 is single-device.)*
 
 ```
-  0.000s  Spaceball  BALL  period=  100  T(     0,     0,     0)  R(     0,     0,     0)
+  0.000s  Spaceball  BALL  period=  100  Tr(     0,     0,     0)  R(     0,     0,     0)
   0.123s  Spaceball  KEY   pick=false  buttons=[]
-  1.001s  SpaceOrb   BALL  F(    45,   -12,     3)  T(     0,     7,   -20)
+  1.001s  SpaceOrb   BALL  F(    45,   -12,     3)  Tq(     0,     7,   -20)
   1.002s  SpaceOrb   KEY   rezero=false  [A]
   1.003s  SpaceOrb   RESET hello
   1.004s  SpaceOrb   ERR   brown_out=false  eeprom=false  hw=false
-  1.005s  SpaceOrb   UNK   (see hex with --hex)
+  1.005s  SpaceOrb   UNK   40 01 02 03
 ```
+
+`Tr()` is Spaceball **Tr**anslation; `Tq()` is SpaceOrb **Tq**orque. Both would otherwise appear as `T()` and be easily confused with each other.
+
+`UNK` packets always include their bytes in the parsed column — without them the line conveys nothing useful.
 
 ### With `--hex`
 
 ```
-  0.000s  Spaceball  44 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00   BALL  period=  100  T(...)
-  0.123s  Spaceball  6b 01 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00   KEY   pick=false  buttons=[]
+  0.000s  Spaceball  44 00 00 00  00 00 00 00  00 00 00 00  00 00 00 00  00 00 00 00   BALL  period=  100  Tr(...)
+  0.123s  Spaceball  6b 01 00 00  00 00 00 00  00 00 00 00  00 00 00 00  00 00 00 00   KEY   pick=false  buttons=[]
+  1.005s  SpaceOrb   40 01 02 03  00 00 00 00  00 00 00 00  00 00 00 00  00 00 00 00   UNK   40 01 02 03
 ```
 
-Hex column: **fixed 20-byte width** (60 characters: each byte printed as `xx`, separated by spaces, padded with spaces if the packet is shorter than 20 bytes). This is wide enough for the longest packets from either device and keeps the parsed column at a stable offset.
+Hex column: **fixed 20-byte width**, bytes printed as `xx` in **groups of 4 separated by double spaces**: `xx xx xx xx  xx xx xx xx  ...`. Shorter packets are padded with spaces to the full column width. This is wide enough for the longest packets from either device and keeps the parsed column at a stable offset. Grouping improves scannability without requiring knowledge of packet field boundaries.
+
+**UNK with `--hex`:** both the hex column (raw wire bytes, including `^`-escape sequences and framing for Spaceball) and the parsed column (decoded logical bytes) are shown. They may differ for Spaceball packets due to escaping; for SpaceOrb they will match. The minor redundancy in the SpaceOrb case is accepted for the sake of a consistent rule: the hex column always means raw wire bytes, regardless of packet type.
 
 ### With `-e` / `--events`
 
 ```
-  0.000s  Spaceball  MOTION  T( 0.000,  0.000,  0.000)  R( 0.000,  0.000,  0.000)
+  0.000s  Spaceball  MOTION  Tr( 0.000,  0.000,  0.000)  R( 0.000,  0.000,  0.000)
   0.123s  Spaceball  BUTTON  [. . . . . . . .]
-  1.001s  SpaceOrb   MOTION  T( 0.044, -0.012,  0.003)  R( 0.000,  0.007, -0.020)
+  1.001s  SpaceOrb   MOTION  Tr( 0.044, -0.012,  0.003)  R( 0.000,  0.007, -0.020)
   1.002s  SpaceOrb   BUTTON  [. X . . . .]
 ```
 
@@ -181,8 +188,10 @@ examples/sbdump.rs
 - `sbdump` auto-detects SpaceOrb and Spaceball without flags
 - `--spaceorb` / `--spaceball` force the respective device type
 - Default output: timestamp + device ID + parsed packet fields
-- `--hex`: adds fixed-width 20-byte hex column between device ID and parsed fields
-- `-e` / `--events`: shows `NormalizedMotion` values instead of raw packet fields
+- Spaceball ball uses `Tr()` for translation; SpaceOrb ball uses `Tq()` for torque — no ambiguity
+- `UNK` packets always print their bytes in the parsed column
+- `--hex`: adds fixed-width 20-byte hex column (groups of 4, double-space separated) between device ID and parsed fields
+- `-e` / `--events`: shows `NormalizedMotion` values (`Tr()` / `R()`) instead of raw packet fields
 - `-e --hex`: shows both normalized values and hex bytes
 - All four flag combinations produce well-aligned, consistent column layout
 - Device ID column is fixed-width (9 chars) with space padding
