@@ -88,7 +88,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     let ambient = AmbientLight::new(&context, 0.4, Srgba::WHITE);
-    let dir_light = DirectionalLight::new(&context, 1.5, Srgba::WHITE, &vec3(-1.0, -2.0, -1.5));
+    let dir_light = DirectionalLight::new(&context, 1.5, Srgba::WHITE, vec3(-1.0, -2.0, -1.5));
 
     let mut gui = GUI::new(&context);
 
@@ -110,7 +110,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             frame_input.viewport,
             frame_input.device_pixel_ratio,
             |ctx| {
-                egui::SidePanel::left("state_panel").show(ctx, |ui| {
+                egui::Panel::left("state_panel").show_inside(ctx, |ui| {
                     ui.heading("6DOF Device");
                     ui.separator();
 

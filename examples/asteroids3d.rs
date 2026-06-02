@@ -78,9 +78,10 @@
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
+use bevy::mesh::VertexAttributeValues;
 use bevy::prelude::*;
-use bevy::render::mesh::VertexAttributeValues;
-use rand::{Rng, SeedableRng, rngs::SmallRng};
+use bevy::window::WindowResolution;
+use rand::{Rng, RngExt, SeedableRng, rngs::Xoshiro256PlusPlus};
 use spaceball_rs::{DeviceEvent, InputMode, first, probe, process};
 
 /// Starting number of asteroids for wave 1.
@@ -296,7 +297,7 @@ fn main() {
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
                 title: "Asteroids 3D".into(),
-                resolution: (1280.0, 720.0).into(),
+                resolution: WindowResolution::new(1280u32, 720u32),
                 ..default()
             }),
             ..default()
@@ -338,7 +339,8 @@ fn setup(
     commands.spawn((Camera3d::default(), Transform::default()));
 
     // ── Lights ───────────────────────────────────────────────────────────────
-    commands.insert_resource(AmbientLight {
+    commands.spawn(AmbientLight {
+        affects_lightmapped_meshes: true,
         color: Color::WHITE,
         brightness: 120.0,
     });
@@ -377,20 +379,20 @@ fn setup(
         emissive: LinearRgba::new(4.0, 4.2, 5.0, 1.0), // cool blue-white glow
         ..default()
     });
-    let mut star_rng = SmallRng::seed_from_u64(7);
+    let mut star_rng = Xoshiro256PlusPlus::seed_from_u64(7);
     for _ in 0..STAR_COUNT {
         let dir = loop {
             let v = Vec3::new(
-                star_rng.gen_range(-1.0_f32..1.0),
-                star_rng.gen_range(-1.0_f32..1.0),
-                star_rng.gen_range(-1.0_f32..1.0),
+                star_rng.random_range(-1.0_f32..1.0),
+                star_rng.random_range(-1.0_f32..1.0),
+                star_rng.random_range(-1.0_f32..1.0),
             );
             if v.length_squared() > 1e-4 {
                 break v.normalize();
             }
         };
-        let dist = star_rng.gen_range(1_000.0_f32..3_000.0_f32);
-        let size = star_rng.gen_range(0.4_f32..1.2_f32);
+        let dist = star_rng.random_range(1_000.0_f32..3_000.0_f32);
+        let size = star_rng.random_range(0.4_f32..1.2_f32);
         commands.spawn((
             Mesh3d(star_mesh.clone()),
             MeshMaterial3d(star_mat.clone()),
@@ -407,7 +409,7 @@ fn setup(
     commands.insert_resource(AsteroidAssets {
         mat: rock_mat.clone(),
     });
-    let mut rng = SmallRng::seed_from_u64(42);
+    let mut rng = Xoshiro256PlusPlus::seed_from_u64(42);
     spawn_asteroid_field(
         &mut commands,
         &mut meshes,
@@ -571,7 +573,7 @@ fn setup(
 
 fn update_camera(player: Res<Player>, mut query: Query<&mut Transform, With<Camera3d>>) {
     let state = player.0.lock().unwrap();
-    if let Ok(mut transform) = query.get_single_mut() {
+    if let Ok(mut transform) = query.single_mut() {
         transform.translation = state.position;
         transform.rotation = state.orientation;
     }
@@ -588,22 +590,22 @@ fn spawn_asteroid_field(
     for _ in 0..count {
         let dir = loop {
             let v = Vec3::new(
-                rng.gen_range(-1.0_f32..1.0),
-                rng.gen_range(-1.0_f32..1.0),
-                rng.gen_range(-1.0_f32..1.0),
+                rng.random_range(-1.0_f32..1.0),
+                rng.random_range(-1.0_f32..1.0),
+                rng.random_range(-1.0_f32..1.0),
             );
             if v.length_squared() > 1e-4 {
                 break v.normalize();
             }
         };
-        let dist = rng.gen_range(ASTEROID_MIN_DIST..ASTEROID_MAX_DIST);
-        let scale = rng.gen_range(LARGE_RADIUS..6.0_f32);
+        let dist = rng.random_range(ASTEROID_MIN_DIST..ASTEROID_MAX_DIST);
+        let scale = rng.random_range(LARGE_RADIUS..6.0_f32);
         let rock_mesh = make_rock_mesh(meshes, rng);
         // Tangential orbital velocity: perpendicular to the radial direction at a
         // random fraction of circular orbital speed so the asteroid orbits rather
         // than falling straight into the wormhole.
         let v_orb = (GRAVITY / dist).sqrt();
-        let orbital_fraction = rng.gen_range(0.60_f32..0.90_f32);
+        let orbital_fraction = rng.random_range(0.60_f32..0.90_f32);
         let up = if dir.dot(Vec3::Y).abs() < 0.9 {
             Vec3::Y
         } else {
@@ -611,12 +613,12 @@ fn spawn_asteroid_field(
         };
         let tangent = dir.cross(up).normalize();
         let bitangent = dir.cross(tangent);
-        let angle = rng.gen_range(0.0_f32..std::f32::consts::TAU);
+        let angle = rng.random_range(0.0_f32..std::f32::consts::TAU);
         let velocity = (tangent * angle.cos() + bitangent * angle.sin()) * v_orb * orbital_fraction;
         let angular_velocity = Vec3::new(
-            rng.gen_range(-0.3_f32..0.3),
-            rng.gen_range(-0.3_f32..0.3),
-            rng.gen_range(-0.3_f32..0.3),
+            rng.random_range(-0.3_f32..0.3),
+            rng.random_range(-0.3_f32..0.3),
+            rng.random_range(-0.3_f32..0.3),
         );
 
         commands.spawn((
@@ -643,7 +645,7 @@ fn make_rock_mesh(meshes: &mut Assets<Mesh>, rng: &mut impl Rng) -> Handle<Mesh>
         mesh.attribute_mut(Mesh::ATTRIBUTE_POSITION)
     {
         for pos in positions.iter_mut() {
-            let factor = rng.gen_range(0.85_f32..1.15_f32);
+            let factor = rng.random_range(0.85_f32..1.15_f32);
             pos[0] *= factor;
             pos[1] *= factor;
             pos[2] *= factor;
@@ -662,7 +664,7 @@ fn update_hud(
     mut text_query: Query<&mut Text, With<AsteroidCountText>>,
 ) {
     let count = asteroids.iter().count();
-    if let Ok(mut t) = text_query.get_single_mut() {
+    if let Ok(mut t) = text_query.single_mut() {
         *t = Text::new(format!("Asteroids: {count}"));
     }
 }
@@ -740,7 +742,7 @@ fn asteroid_collisions(
                 Vec3::X
             };
 
-            let mut rng = rand::thread_rng();
+            let mut rng = rand::rng();
 
             // Large asteroids split into two medium fragments; medium asteroids vanish.
             for &(pos, r, vel, ang) in &[(pos_a, r_a, vel_a, ang_a), (pos_b, r_b, vel_b, ang_b)] {
@@ -838,7 +840,7 @@ fn bullet_hits(
 
         // Detonate: consume the bullet, then damage everything in BLAST_RADIUS.
         commands.entity(b_entity).despawn();
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
 
         for &(a_entity, a_pos, a_r, a_vel, a_ang) in &asteroid_data {
             if asteroids_hit.contains(&a_entity) {
@@ -884,7 +886,7 @@ fn update_score_hud(score: Res<Score>, mut query: Query<&mut Text, With<ScoreTex
     if !score.is_changed() {
         return;
     }
-    if let Ok(mut t) = query.get_single_mut() {
+    if let Ok(mut t) = query.single_mut() {
         *t = Text::new(format!("Score: {}", score.0));
     }
 }
@@ -909,7 +911,7 @@ fn check_wave_clear(
     if shields.0 == 0 {
         if !wave.game_over {
             wave.game_over = true;
-            if let Ok((mut t, mut vis)) = clear_msg.get_single_mut() {
+            if let Ok((mut t, mut vis)) = clear_msg.single_mut() {
                 *t = Text::new("GAME OVER");
                 *vis = Visibility::Inherited;
             }
@@ -923,12 +925,12 @@ fn check_wave_clear(
         if wave.clear_timer <= 0.0 {
             wave.clear_timer = 0.0;
             wave.wave += 1;
-            if let Ok((_, mut vis)) = clear_msg.get_single_mut() {
+            if let Ok((_, mut vis)) = clear_msg.single_mut() {
                 *vis = Visibility::Hidden;
             }
             // New waves always spawn around the wormhole.
             let count = wave_asteroid_count(wave.wave);
-            let mut rng = rand::thread_rng();
+            let mut rng = rand::rng();
             spawn_asteroid_field(
                 &mut commands,
                 &mut meshes,
@@ -941,7 +943,7 @@ fn check_wave_clear(
     } else if asteroids.iter().count() == 0 {
         // Wave cleared — start the inter-wave countdown.
         wave.clear_timer = WAVE_CLEAR_PAUSE;
-        if let Ok((mut t, mut vis)) = clear_msg.get_single_mut() {
+        if let Ok((mut t, mut vis)) = clear_msg.single_mut() {
             *t = Text::new(format!("Wave {} Clear!", wave.wave));
             *vis = Visibility::Inherited;
         }
@@ -953,7 +955,7 @@ fn update_wave_hud(wave: Res<WaveState>, mut query: Query<&mut Text, With<WaveTe
     if !wave.is_changed() {
         return;
     }
-    if let Ok(mut t) = query.get_single_mut() {
+    if let Ok(mut t) = query.single_mut() {
         *t = Text::new(format!("Wave: {}", wave.wave));
     }
 }
@@ -978,7 +980,7 @@ fn update_shields_hud(shields: Res<Shields>, mut query: Query<&mut Text, With<Sh
     if !shields.is_changed() {
         return;
     }
-    if let Ok(mut t) = query.get_single_mut() {
+    if let Ok(mut t) = query.single_mut() {
         *t = Text::new(format!("Shields: {}", shields.0));
     }
 }
