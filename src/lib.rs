@@ -60,6 +60,16 @@ pub struct NormalizedMotion {
     pub rotation: [f32; 3],
 }
 
+/// A parsed packet paired with the raw serial bytes that produced it.
+///
+/// `raw` contains bytes exactly as received from the serial port, including
+/// all framing: CR terminator and `^`-escape sequences for Spaceball;
+/// header byte and XOR checksum byte for SpaceOrb.
+pub struct RawPacket<P> {
+    pub raw: Vec<u8>,
+    pub packet: P,
+}
+
 /// Generic button access, implemented by device-specific key event types.
 pub trait ButtonState {
     fn pressed(&self, index: usize) -> bool;
@@ -172,4 +182,16 @@ pub fn first() -> Result<Box<dyn SixDofDevice>, Error> {
         .into_iter()
         .find_map(|info| probe(&info.port_name).ok())
         .ok_or(Error::NoDeviceFound)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn raw_packet_holds_raw_and_packet() {
+        let rp: RawPacket<u32> = RawPacket { raw: vec![0x01, 0x02], packet: 42 };
+        assert_eq!(rp.raw, [0x01, 0x02]);
+        assert_eq!(rp.packet, 42);
+    }
 }
