@@ -63,6 +63,8 @@ fn cmd_list() {
     println!("{table}");
 }
 
+const CONNECTED: &str = "connected   ";
+
 fn cmd_watch() {
     let start = Instant::now();
     let mut known: HashMap<String, PortEntry> = HashMap::new();
@@ -71,16 +73,16 @@ fn cmd_watch() {
     for info in candidate_ports() {
         let label = probe_port(&info.port_name);
         let (product, manufacturer, serial) = usb_fields(&info);
-        let secs = start.elapsed().as_secs();
         let product_col = format!("{:<20}", product);
         let mfg_col = format!("{:<20}", manufacturer);
+        let secs = start.elapsed().as_secs();
         println!(
             "[{:>4}s] {}  {:<9}  {}  {}  {:<15}  {}",
             secs,
-            "connected   ".green(),
+            CONNECTED.green(),
             label,
-            product_col.as_str().blue(),
-            mfg_col.as_str().blue(),
+            product_col.blue(),
+            mfg_col.blue(),
             serial,
             info.port_name.as_str().yellow(),
         );
@@ -99,16 +101,16 @@ fn cmd_watch() {
             if !known.contains_key(&info.port_name) {
                 let label = probe_port(&info.port_name);
                 let (product, manufacturer, serial) = usb_fields(info);
-                let secs = start.elapsed().as_secs();
                 let product_col = format!("{:<20}", product);
                 let mfg_col = format!("{:<20}", manufacturer);
+                let secs = start.elapsed().as_secs();
                 println!(
                     "[{:>4}s] {}  {:<9}  {}  {}  {:<15}  {}",
                     secs,
-                    "connected   ".green(),
+                    CONNECTED.green(),
                     label,
-                    product_col.as_str().blue(),
-                    mfg_col.as_str().blue(),
+                    product_col.blue(),
+                    mfg_col.blue(),
                     serial,
                     info.port_name.as_str().yellow(),
                 );
@@ -135,10 +137,10 @@ fn cmd_watch() {
                 secs,
                 "disconnected".red(),
                 entry.label,
-                product_col.as_str().blue(),
-                mfg_col.as_str().blue(),
+                product_col.blue(),
+                mfg_col.blue(),
                 entry.serial,
-                path.as_str().yellow(),
+                path.yellow(),
             );
         }
     }
