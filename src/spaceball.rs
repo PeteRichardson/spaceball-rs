@@ -75,7 +75,7 @@ impl Spaceball {
     pub fn events_with_bytes(
         &mut self,
     ) -> impl Iterator<Item = Result<(Vec<u8>, DeviceEvent), io::Error>> + '_ {
-        let mut last_period = 800u16;
+        let mut last_period = 800u16; // ~50 ms default (20 Hz)
         self.packets_with_bytes().filter_map(move |r| match r {
             Err(e) => Some(Err(e)),
             Ok(RawPacket { raw, packet }) => match packet {
