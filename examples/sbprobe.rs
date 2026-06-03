@@ -20,6 +20,17 @@ fn probe_port(path: &str) -> &'static str {
     }
 }
 
+fn usb_fields(info: &serialport::SerialPortInfo) -> (String, String, String) {
+    match &info.port_type {
+        serialport::SerialPortType::UsbPort(u) => (
+            u.product.as_deref().unwrap_or("?").to_owned(),
+            u.manufacturer.as_deref().unwrap_or("?").to_owned(),
+            u.serial_number.as_deref().unwrap_or("?").to_owned(),
+        ),
+        _ => ("?".into(), "?".into(), "?".into()),
+    }
+}
+
 fn cmd_list() {
     let ports = candidate_ports();
     if ports.is_empty() {
@@ -32,19 +43,12 @@ fn cmd_list() {
     table.set_header([bold("Device"), bold("Product"), bold("Manufacturer"), bold("Serial"), bold("Port")]);
     for info in &ports {
         let label = probe_port(&info.port_name);
-        let (product, manufacturer, serial) = match &info.port_type {
-            serialport::SerialPortType::UsbPort(u) => (
-                u.product.as_deref().unwrap_or("?"),
-                u.manufacturer.as_deref().unwrap_or("?"),
-                u.serial_number.as_deref().unwrap_or("?"),
-            ),
-            _ => ("?", "?", "?"),
-        };
+        let (product, manufacturer, serial) = usb_fields(info);
         table.add_row([
             Cell::new(label),
-            Cell::new(product).fg(Color::Blue),
-            Cell::new(manufacturer).fg(Color::Blue),
-            Cell::new(serial),
+            Cell::new(&product).fg(Color::Blue),
+            Cell::new(&manufacturer).fg(Color::Blue),
+            Cell::new(&serial),
             Cell::new(&info.port_name).fg(Color::Yellow),
         ]);
     }
