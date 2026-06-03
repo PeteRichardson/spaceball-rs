@@ -1,4 +1,4 @@
-use crate::{ButtonState, DeviceEvent, Error, NormalizedMotion, Probeable, SixDofDevice};
+use crate::{ButtonState, DeviceEvent, Error, NormalizedMotion, Probeable, RawPacket, SixDofDevice};
 use std::io::{self, Read};
 use std::time::Duration;
 
@@ -53,11 +53,21 @@ impl Spaceball {
         self.port.by_ref().bytes()
     }
 
-    /// Returns an iterator of decoded [`SpaceballPacket`]s from the Spaceball.
-    pub fn packets(&mut self) -> SpaceballPacketIter<impl Iterator<Item = Result<u8, io::Error>> + '_> {
-        SpaceballPacketIter {
+    /// Returns an iterator of [`RawPacket`]s from the Spaceball, each carrying
+    /// the decoded packet alongside the original wire bytes.
+    pub fn packets_with_bytes(
+        &mut self,
+    ) -> SpaceballRawPacketIter<impl Iterator<Item = Result<u8, io::Error>> + '_> {
+        SpaceballRawPacketIter {
             inner: self.port.by_ref().bytes(),
         }
+    }
+
+    /// Returns an iterator of decoded [`SpaceballPacket`]s from the Spaceball.
+    pub fn packets(
+        &mut self,
+    ) -> impl Iterator<Item = Result<SpaceballPacket, io::Error>> + '_ {
+        self.packets_with_bytes().map(|r| r.map(|rp| rp.packet))
     }
 }
 
@@ -103,43 +113,59 @@ pub enum SpaceballPacket {
 }
 
 // ---------------------------------------------------------------------------
-// SpaceballPacketIter
+// SpaceballRawPacketIter
 // ---------------------------------------------------------------------------
 
-pub struct SpaceballPacketIter<I> {
+pub struct SpaceballRawPacketIter<I> {
     inner: I,
 }
 
-impl<I: Iterator<Item = Result<u8, io::Error>>> Iterator for SpaceballPacketIter<I> {
-    type Item = Result<SpaceballPacket, io::Error>;
+impl<I: Iterator<Item = Result<u8, io::Error>>> Iterator for SpaceballRawPacketIter<I> {
+    type Item = Result<RawPacket<SpaceballPacket>, io::Error>;
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {
-            let mut raw: Vec<u8> = Vec::new();
+            let mut wire: Vec<u8> = Vec::new();
+            let mut decoded: Vec<u8> = Vec::new();
 
-            // Accumulate bytes up to the \r packet terminator, decoding
-            // the four binary-mode escape sequences along the way.
             loop {
                 match self.inner.next()? {
                     Err(e) if e.kind() == io::ErrorKind::TimedOut => continue,
                     Err(e) => return Some(Err(e)),
-                    Ok(b'\r') => break,
-                    Ok(b'^') => match self.inner.next()? {
-                        Err(e) => return Some(Err(e)),
-                        Ok(b'Q') => raw.push(0x11), // XON
-                        Ok(b'S') => raw.push(0x13), // XOFF
-                        Ok(b'M') => raw.push(0x0D), // CR
-                        Ok(b'^') => raw.push(0x1E), // ^
-                        Ok(_) => {}                 // invalid escape, skip
-                    },
-                    Ok(b) => raw.push(b),
+                    Ok(b'\r') => {
+                        wire.push(b'\r');
+                        break;
+                    }
+                    Ok(b'^') => {
+                        wire.push(b'^');
+                        match self.inner.next()? {
+                            Err(e) => return Some(Err(e)),
+                            Ok(ch) => {
+                                wire.push(ch);
+                                match ch {
+                                    b'Q' => decoded.push(0x11),
+                                    b'S' => decoded.push(0x13),
+                                    b'M' => decoded.push(0x0D),
+                                    b'^' => decoded.push(0x1E),
+                                    _ => {} // invalid escape — skip in decoded
+                                }
+                            }
+                        }
+                    }
+                    Ok(b) => {
+                        wire.push(b);
+                        decoded.push(b);
+                    }
                 }
             }
 
-            if !raw.is_empty() {
-                return Some(Ok(parse_packet(raw)));
+            if !decoded.is_empty() {
+                return Some(Ok(RawPacket {
+                    raw: wire,
+                    packet: parse_packet(decoded),
+                }));
             }
-            // bare \r — loop and read the next packet
+            // bare \r — loop and read next packet
         }
     }
 }
@@ -398,5 +424,63 @@ mod tests {
         }
         let d = FakeSb;
         assert_eq!(d.device_id(), "Spaceball");
+    }
+
+    #[test]
+    fn raw_iter_plain_ball_packet_wire_includes_cr() {
+        // D packet with no escape sequences: wire bytes = decoded bytes + CR
+        let period: u16 = 800;
+        let tx: i16 = 1000;
+        let mut wire: Vec<u8> = vec![b'D'];
+        wire.extend_from_slice(&period.to_be_bytes());
+        wire.extend_from_slice(&tx.to_be_bytes());
+        wire.extend_from_slice(&[0u8; 10]); // ty, tz, rx, ry, rz
+        wire.push(b'\r');
+
+        let iter = SpaceballRawPacketIter { inner: wire.clone().into_iter().map(Ok) };
+        let results: Vec<_> = iter.collect();
+        assert_eq!(results.len(), 1);
+        let rp = results[0].as_ref().unwrap();
+        assert_eq!(rp.raw, wire);
+        assert!(matches!(rp.packet, SpaceballPacket::Ball(_)));
+    }
+
+    #[test]
+    fn raw_iter_escaped_byte_preserved_in_wire() {
+        // D packet where period high byte = 0x0D (CR), encoded as ^M on wire
+        // Decoded: D 0x0D 0x00 [12 zeros]
+        // Wire:    D ^ M  0x00 [12 zeros] CR
+        let period_lo: u8 = 0x00;
+        let mut wire: Vec<u8> = vec![b'D', b'^', b'M', period_lo];
+        wire.extend_from_slice(&[0u8; 12]);
+        wire.push(b'\r');
+
+        let iter = SpaceballRawPacketIter { inner: wire.clone().into_iter().map(Ok) };
+        let results: Vec<_> = iter.collect();
+        assert_eq!(results.len(), 1);
+        let rp = results[0].as_ref().unwrap();
+        // Wire must include the ^ M escape pair
+        assert_eq!(rp.raw, wire);
+        // Decoded period high byte must be 0x0D
+        if let SpaceballPacket::Ball(b) = &rp.packet {
+            assert_eq!((b.period >> 8) as u8, 0x0D);
+        } else {
+            panic!("expected Ball");
+        }
+    }
+
+    #[test]
+    fn raw_iter_bare_cr_is_skipped() {
+        // A bare \r followed by a real K packet
+        let key_raw = make_key_raw(false, [false; 8]);
+        let mut wire: Vec<u8> = vec![b'\r']; // bare CR
+        wire.extend_from_slice(&key_raw);
+        wire.push(b'\r');
+
+        let iter = SpaceballRawPacketIter { inner: wire.into_iter().map(Ok) };
+        let results: Vec<_> = iter.collect();
+        // Only one packet (the K packet), bare CR is skipped
+        assert_eq!(results.len(), 1);
+        assert!(matches!(results[0].as_ref().unwrap().packet, SpaceballPacket::Key(_)));
     }
 }
