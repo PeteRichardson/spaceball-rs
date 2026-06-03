@@ -150,6 +150,25 @@ impl SpaceOrb {
         self.packets_with_bytes().map(|r| r.map(|rp| rp.packet))
     }
 
+    pub fn events_with_bytes(
+        &mut self,
+    ) -> impl Iterator<Item = Result<(Vec<u8>, DeviceEvent), io::Error>> + '_ {
+        self.packets_with_bytes().filter_map(|r| match r {
+            Err(e) => Some(Err(e)),
+            Ok(RawPacket { raw, packet }) => match packet {
+                SpaceOrbPacket::Ball(b) => Some(Ok((
+                    raw,
+                    DeviceEvent::Motion(NormalizedMotion {
+                        translation: b.force.map(|v| v as f32 / 511.0),
+                        rotation: b.torque.map(|v| v as f32 / 511.0),
+                    }),
+                ))),
+                SpaceOrbPacket::Key(k) => Some(Ok((raw, DeviceEvent::Button(Box::new(k))))),
+                _ => None,
+            },
+        })
+    }
+
     pub fn bytes(&mut self) -> impl Iterator<Item = Result<u8, io::Error>> + '_ {
         use std::io::Read;
         self.port.by_ref().bytes()
@@ -259,19 +278,7 @@ impl SixDofDevice for SpaceOrb {
     fn device_id(&self) -> &'static str { "SpaceOrb" }
 
     fn events(&mut self) -> Box<dyn Iterator<Item = Result<DeviceEvent, io::Error>> + '_> {
-        Box::new(self.packets().filter_map(|pkt| match pkt {
-            Err(e) => Some(Err(e)),
-            Ok(SpaceOrbPacket::Ball(b)) => {
-                Some(Ok(DeviceEvent::Motion(NormalizedMotion {
-                    translation: b.force.map(|v| v as f32 / 511.0),
-                    rotation:    b.torque.map(|v| v as f32 / 511.0),
-                })))
-            }
-            Ok(SpaceOrbPacket::Key(k)) => {
-                Some(Ok(DeviceEvent::Button(Box::new(k))))
-            }
-            _ => None,
-        }))
+        Box::new(self.events_with_bytes().map(|r| r.map(|(_, e)| e)))
     }
 }
 
