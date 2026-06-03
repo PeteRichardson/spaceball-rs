@@ -69,6 +69,36 @@ impl Spaceball {
     ) -> impl Iterator<Item = Result<SpaceballPacket, io::Error>> + '_ {
         self.packets_with_bytes().map(|r| r.map(|rp| rp.packet))
     }
+
+    /// Returns an iterator of `(raw_wire_bytes, DeviceEvent)` pairs from the Spaceball.
+    /// `Unknown` packets are silently filtered out. Errors are passed through.
+    pub fn events_with_bytes(
+        &mut self,
+    ) -> impl Iterator<Item = Result<(Vec<u8>, DeviceEvent), io::Error>> + '_ {
+        let mut last_period = 800u16;
+        self.packets_with_bytes().filter_map(move |r| match r {
+            Err(e) => Some(Err(e)),
+            Ok(RawPacket { raw, packet }) => match packet {
+                SpaceballPacket::Ball(b) => {
+                    if b.period > 0 {
+                        last_period = b.period;
+                    }
+                    let norm = |v: i16| normalize_spaceball_delta(v, last_period);
+                    Some(Ok((
+                        raw,
+                        DeviceEvent::Motion(NormalizedMotion {
+                            translation: b.translation.map(norm),
+                            rotation: b.rotation.map(norm),
+                        }),
+                    )))
+                }
+                SpaceballPacket::Key(k) => {
+                    Some(Ok((raw, DeviceEvent::Button(Box::new(k)))))
+                }
+                SpaceballPacket::Unknown(_) => None,
+            },
+        })
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -181,22 +211,7 @@ impl SixDofDevice for Spaceball {
     fn device_id(&self) -> &'static str { "Spaceball" }
 
     fn events(&mut self) -> Box<dyn Iterator<Item = Result<DeviceEvent, io::Error>> + '_> {
-        let mut last_period = 800u16; // ~50 ms default (20 Hz)
-        Box::new(self.packets().filter_map(move |pkt| match pkt {
-            Err(e) => Some(Err(e)),
-            Ok(SpaceballPacket::Ball(b)) => {
-                if b.period > 0 { last_period = b.period; }
-                let norm = |v: i16| normalize_spaceball_delta(v, last_period);
-                Some(Ok(DeviceEvent::Motion(NormalizedMotion {
-                    translation: b.translation.map(norm),
-                    rotation: b.rotation.map(norm),
-                })))
-            }
-            Ok(SpaceballPacket::Key(k)) => {
-                Some(Ok(DeviceEvent::Button(Box::new(k))))
-            }
-            Ok(SpaceballPacket::Unknown(_)) => None,
-        }))
+        Box::new(self.events_with_bytes().map(|r| r.map(|(_, e)| e)))
     }
 }
 
