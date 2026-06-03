@@ -4,7 +4,7 @@
 
 ## Goal
 
-Bring `cmd_watch` up to parity with `cmd_list`: show product, manufacturer, and serial number on each event line, with the same crossterm colors (product/manufacturer in blue, port in yellow). Detach lines show cached metadata from when the port was first seen.
+Bring `cmd_watch` up to parity with `cmd_list`: show product, manufacturer, and serial number on each event line, with the same crossterm colors (product/manufacturer in blue, port in yellow). Detach lines show cached metadata from when the port was first seen. The `+`/`-` event indicator is replaced with the words "connected" (green) and "disconnected" (red) to make attach and detach events more visually distinct.
 
 ## Changes
 
@@ -35,7 +35,11 @@ The new-port detection loop currently converts `candidate_ports()` to a `HashSet
 
 ### 4. Colors via crossterm
 
-`crossterm = "0.29"` added to `[dev-dependencies]` in `Cargo.toml` (matches the version already in the lockfile as a transitive dep of comfy-table). `use crossterm::style::Stylize` provides `.blue()` and `.yellow()` on `&str`. Applied inline at each `println!` in `cmd_watch`.
+`crossterm = "0.29"` added to `[dev-dependencies]` in `Cargo.toml` (matches the version already in the lockfile as a transitive dep of comfy-table). `use crossterm::style::Stylize` provides `.blue()`, `.yellow()`, `.green()`, `.red()` on `&str`. Applied inline at each `println!` in `cmd_watch`.
+
+**ANSI padding rule:** ANSI escape codes inflate byte count, so `{:<N}` format specifiers don't measure visible width correctly when applied to already-colored strings. Always pad first, then color: `format!("{:<20}", product).green()` not `format!("{:<20}", product.green())`. This applies to all colored columns.
+
+The event word is a known-length field: `"disconnected"` is 12 chars; `"connected"` is padded to 12 before coloring (`format!("{:<12}", "connected").green()`) to keep subsequent columns aligned.
 
 ### 5. `cmd_list` simplification
 
@@ -44,5 +48,5 @@ The new-port detection loop currently converts `candidate_ports()` to a `HashSet
 ## Out of scope
 
 - `print_event_line` helper: only two call sites (attach and detach), not worth the indirection.
-- Sign coloring (`+`/`-`): not requested.
+- Keeping `+`/`-` alongside the words: words alone are sufficient.
 - Column width auto-sizing in watch output: fixed-width format strings are appropriate for streaming output.
