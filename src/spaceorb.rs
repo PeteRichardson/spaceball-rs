@@ -1,4 +1,4 @@
-use crate::{ButtonState, DeviceEvent, Error, NormalizedMotion, Probeable, SixDofDevice};
+use crate::{ButtonState, DeviceEvent, Error, NormalizedMotion, Probeable, RawPacket, SixDofDevice};
 use std::io;
 
 // ── Public types ─────────────────────────────────────────────────────────────
@@ -142,8 +142,12 @@ impl SpaceOrb {
         Ok(SpaceOrb { port })
     }
 
-    pub fn packets(&mut self) -> SpaceOrbPacketIter<impl io::Read + '_> {
-        SpaceOrbPacketIter { inner: &mut *self.port }
+    pub fn packets_with_bytes(&mut self) -> SpaceOrbRawPacketIter<impl io::Read + '_> {
+        SpaceOrbRawPacketIter { inner: &mut *self.port }
+    }
+
+    pub fn packets(&mut self) -> impl Iterator<Item = Result<SpaceOrbPacket, io::Error>> + '_ {
+        self.packets_with_bytes().map(|r| r.map(|rp| rp.packet))
     }
 
     pub fn bytes(&mut self) -> impl Iterator<Item = Result<u8, io::Error>> + '_ {
@@ -155,18 +159,15 @@ impl SpaceOrb {
 // Safety: Box<dyn SerialPort> is not Send by default, but the underlying TTYPort is safe to send across threads.
 unsafe impl Send for SpaceOrb {}
 
-// ── SpaceOrbPacketIter ────────────────────────────────────────────────────────
-
-pub struct SpaceOrbPacketIter<R> {
+pub struct SpaceOrbRawPacketIter<R> {
     inner: R,
 }
 
-impl<R: io::Read> Iterator for SpaceOrbPacketIter<R> {
-    type Item = Result<SpaceOrbPacket, io::Error>;
+impl<R: io::Read> Iterator for SpaceOrbRawPacketIter<R> {
+    type Item = Result<RawPacket<SpaceOrbPacket>, io::Error>;
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {
-            // Read header byte (top bit = 0).
             let mut hdr = [0u8; 1];
             loop {
                 match self.inner.read(&mut hdr) {
@@ -177,47 +178,45 @@ impl<R: io::Read> Iterator for SpaceOrbPacketIter<R> {
                 }
             }
 
-            if hdr[0] == b'\r' {
-                continue; // terminator packet — skip
-            }
-            if hdr[0] & 0x80 != 0 {
-                continue; // stray data byte — skip
-            }
+            if hdr[0] == b'\r' { continue; }
+            if hdr[0] & 0x80 != 0 { continue; }
 
             let header = hdr[0];
 
-            // Read data bytes (including trailing XOR).
             let data: Vec<u8> = match header {
                 b'D' => match read_exact_orb(&mut self.inner, 11) {
-                    Some(d) => d,
-                    None => return None,
+                    Some(d) => d, None => return None,
                 },
                 b'K' => match read_exact_orb(&mut self.inner, 4) {
-                    Some(d) => d,
-                    None => return None,
+                    Some(d) => d, None => return None,
                 },
                 b'E' => match read_exact_orb(&mut self.inner, 3) {
-                    Some(d) => d,
-                    None => return None,
+                    Some(d) => d, None => return None,
                 },
                 b'N' => match read_exact_orb(&mut self.inner, 2) {
-                    Some(d) => d,
-                    None => return None,
+                    Some(d) => d, None => return None,
                 },
                 _ => match read_until_xor(&mut self.inner) {
-                    Some(d) => d,
-                    None => return None,
+                    Some(d) => d, None => return None,
                 },
             };
 
-            // Build raw = header + data bytes without the trailing XOR byte.
-            let mut raw = Vec::with_capacity(1 + data.len());
-            raw.push(header);
+            // Wire: header + all data bytes including trailing XOR checksum
+            let mut wire = Vec::with_capacity(1 + data.len());
+            wire.push(header);
+            wire.extend_from_slice(&data);
+
+            // Parsed raw: header + data without trailing XOR (same as existing logic)
+            let mut parsed_raw = Vec::with_capacity(1 + data.len());
+            parsed_raw.push(header);
             if !data.is_empty() {
-                raw.extend_from_slice(&data[..data.len().saturating_sub(1)]);
+                parsed_raw.extend_from_slice(&data[..data.len().saturating_sub(1)]);
             }
 
-            return Some(Ok(parse_orb_packet(&raw)));
+            return Some(Ok(RawPacket {
+                raw: wire,
+                packet: parse_orb_packet(&parsed_raw),
+            }));
         }
     }
 }
@@ -477,5 +476,28 @@ mod tests {
         let b = SpaceOrbBallEvent { force: [-511, 0, 0], torque: [0, 0, 0] };
         let t = b.force[0] as f32 / 511.0;
         assert!((t + 1.0).abs() < 0.01, "expected ~-1.0, got {t}");
+    }
+
+    #[test]
+    fn raw_iter_k_packet_wire_includes_xor() {
+        // K packet wire: K(0x4B) + period(0x80) + status(0x80) + reserved(0x80) + xor(0x80)
+        // = 5 bytes total; parsed raw strips last byte → 4 bytes
+        let wire: &[u8] = &[b'K', 0x80, 0x80, 0x80, 0x80];
+        let iter = SpaceOrbRawPacketIter { inner: wire };
+        let results: Vec<_> = iter.collect();
+        assert_eq!(results.len(), 1);
+        let rp = results[0].as_ref().unwrap();
+        assert_eq!(rp.raw, wire); // all 5 bytes including XOR
+        assert!(matches!(rp.packet, SpaceOrbPacket::Key(_)));
+    }
+
+    #[test]
+    fn raw_iter_cr_packets_are_skipped() {
+        // Bare \r followed by a K packet
+        let wire: &[u8] = &[b'\r', b'K', 0x80, 0x80, 0x80, 0x80];
+        let iter = SpaceOrbRawPacketIter { inner: wire };
+        let results: Vec<_> = iter.collect();
+        assert_eq!(results.len(), 1);
+        assert!(matches!(results[0].as_ref().unwrap().packet, SpaceOrbPacket::Key(_)));
     }
 }
