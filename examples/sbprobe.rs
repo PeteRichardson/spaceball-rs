@@ -1,3 +1,4 @@
+use comfy_table::{presets, Attribute, Cell, Color, Table};
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
@@ -25,10 +26,29 @@ fn cmd_list() {
         println!("(no serial ports found)");
         return;
     }
+    let mut table = Table::new();
+    table.load_preset(presets::NOTHING);
+    let bold = |s| Cell::new(s).add_attribute(Attribute::Bold);
+    table.set_header([bold("Device"), bold("Product"), bold("Manufacturer"), bold("Serial"), bold("Port")]);
     for info in &ports {
         let label = probe_port(&info.port_name);
-        println!("{:<9}  {}", label, info.port_name);
+        let (product, manufacturer, serial) = match &info.port_type {
+            serialport::SerialPortType::UsbPort(u) => (
+                u.product.as_deref().unwrap_or("?"),
+                u.manufacturer.as_deref().unwrap_or("?"),
+                u.serial_number.as_deref().unwrap_or("?"),
+            ),
+            _ => ("?", "?", "?"),
+        };
+        table.add_row([
+            Cell::new(label),
+            Cell::new(product).fg(Color::Blue),
+            Cell::new(manufacturer).fg(Color::Blue),
+            Cell::new(serial),
+            Cell::new(&info.port_name).fg(Color::Yellow),
+        ]);
     }
+    println!("{table}");
 }
 
 fn cmd_watch() {
@@ -60,7 +80,8 @@ fn cmd_watch() {
 
         // Removed ports: print and drop.
         let secs = start.elapsed().as_secs();
-        let gone: Vec<String> = known.keys()
+        let gone: Vec<String> = known
+            .keys()
             .filter(|p| !current.contains(*p))
             .cloned()
             .collect();
@@ -74,7 +95,7 @@ fn cmd_watch() {
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
-        Some("list")  => cmd_list(),
+        Some("list") => cmd_list(),
         Some("watch") => cmd_watch(),
         _ => {
             eprintln!("Usage: sbprobe <list|watch>");
