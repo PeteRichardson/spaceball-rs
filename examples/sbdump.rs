@@ -274,6 +274,60 @@ fn run_packets_spaceorb(orb: &mut SpaceOrb, args: &Args, start: Instant) {
     }
 }
 
-fn run_events(_device: &mut Device, _args: &Args, _start: Instant) {
-    todo!("events mode — implemented in Task 9")
+// ── Event-mode formatters ─────────────────────────────────────────────────────
+
+fn fmt_motion(m: &NormalizedMotion) -> String {
+    let [tx, ty, tz] = m.translation;
+    let [rx, ry, rz] = m.rotation;
+    format!("MOTION  Tr({:7.3},{:7.3},{:7.3})  R({:7.3},{:7.3},{:7.3})",
+        tx, ty, tz, rx, ry, rz)
+}
+
+fn fmt_button(b: &dyn ButtonState) -> String {
+    let pattern = (0..b.count())
+        .map(|i| if b.pressed(i) { "X" } else { "." })
+        .collect::<Vec<_>>()
+        .join(" ");
+    format!("BUTTON  [{pattern}]")
+}
+
+fn run_events(device: &mut Device, args: &Args, start: Instant) {
+    match device {
+        Device::Ball(sb)  => run_events_spaceball(sb, args, start),
+        Device::Orb(orb)  => run_events_spaceorb(orb, args, start),
+    }
+}
+
+fn run_events_spaceball(sb: &mut Spaceball, args: &Args, start: Instant) {
+    let id = "Spaceball";
+    for result in sb.events_with_bytes() {
+        match result {
+            Err(e) => eprintln!("error: {e}"),
+            Ok((raw, event)) => {
+                let hex = if args.hex { Some(raw.as_slice()) } else { None };
+                let parsed = match &event {
+                    DeviceEvent::Motion(m) => fmt_motion(m),
+                    DeviceEvent::Button(b) => fmt_button(b.as_ref()),
+                };
+                print_line(start, id, hex, &parsed);
+            }
+        }
+    }
+}
+
+fn run_events_spaceorb(orb: &mut SpaceOrb, args: &Args, start: Instant) {
+    let id = "SpaceOrb";
+    for result in orb.events_with_bytes() {
+        match result {
+            Err(e) => eprintln!("error: {e}"),
+            Ok((raw, event)) => {
+                let hex = if args.hex { Some(raw.as_slice()) } else { None };
+                let parsed = match &event {
+                    DeviceEvent::Motion(m) => fmt_motion(m),
+                    DeviceEvent::Button(b) => fmt_button(b.as_ref()),
+                };
+                print_line(start, id, hex, &parsed);
+            }
+        }
+    }
 }
