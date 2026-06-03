@@ -1,4 +1,5 @@
 use comfy_table::{presets, Attribute, Cell, Color, Table};
+use crossterm::style::Stylize;
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
@@ -31,6 +32,13 @@ fn usb_fields(info: &serialport::SerialPortInfo) -> (String, String, String) {
     }
 }
 
+struct PortEntry {
+    label: &'static str,
+    product: String,
+    manufacturer: String,
+    serial: String,
+}
+
 fn cmd_list() {
     let ports = candidate_ports();
     if ports.is_empty() {
@@ -57,41 +65,81 @@ fn cmd_list() {
 
 fn cmd_watch() {
     let start = Instant::now();
-    let mut known: HashMap<String, &'static str> = HashMap::new();
+    let mut known: HashMap<String, PortEntry> = HashMap::new();
 
     // Initial scan — treat all ports present at startup as "just connected".
     for info in candidate_ports() {
         let label = probe_port(&info.port_name);
+        let (product, manufacturer, serial) = usb_fields(&info);
         let secs = start.elapsed().as_secs();
-        println!("[{:>4}s] + {:<9}  {}", secs, label, info.port_name);
-        known.insert(info.port_name, label);
+        let product_col = format!("{:<20}", product);
+        let mfg_col = format!("{:<20}", manufacturer);
+        println!(
+            "[{:>4}s] {}  {:<9}  {}  {}  {:<15}  {}",
+            secs,
+            "connected   ".green(),
+            label,
+            product_col.as_str().blue(),
+            mfg_col.as_str().blue(),
+            serial,
+            info.port_name.as_str().yellow(),
+        );
+        known.insert(info.port_name, PortEntry { label, product, manufacturer, serial });
     }
 
     loop {
         std::thread::sleep(Duration::from_secs(1));
 
-        let current: HashSet<String> = candidate_ports().into_iter().map(|i| i.port_name).collect();
+        let current_ports = candidate_ports();
+        let current_names: HashSet<String> =
+            current_ports.iter().map(|i| i.port_name.clone()).collect();
 
-        // New ports: probe and add.
-        for path in &current {
-            if !known.contains_key(path) {
-                let label = probe_port(path);
+        // New ports: probe, cache, and print.
+        for info in &current_ports {
+            if !known.contains_key(&info.port_name) {
+                let label = probe_port(&info.port_name);
+                let (product, manufacturer, serial) = usb_fields(info);
                 let secs = start.elapsed().as_secs();
-                println!("[{:>4}s] + {:<9}  {}", secs, label, path);
-                known.insert(path.clone(), label);
+                let product_col = format!("{:<20}", product);
+                let mfg_col = format!("{:<20}", manufacturer);
+                println!(
+                    "[{:>4}s] {}  {:<9}  {}  {}  {:<15}  {}",
+                    secs,
+                    "connected   ".green(),
+                    label,
+                    product_col.as_str().blue(),
+                    mfg_col.as_str().blue(),
+                    serial,
+                    info.port_name.as_str().yellow(),
+                );
+                known.insert(
+                    info.port_name.clone(),
+                    PortEntry { label, product, manufacturer, serial },
+                );
             }
         }
 
-        // Removed ports: print and drop.
+        // Removed ports: print cached metadata and drop.
         let secs = start.elapsed().as_secs();
         let gone: Vec<String> = known
             .keys()
-            .filter(|p| !current.contains(*p))
+            .filter(|p| !current_names.contains(*p))
             .cloned()
             .collect();
         for path in gone {
-            let label = known.remove(&path).unwrap();
-            println!("[{:>4}s] - {:<9}  {}", secs, label, path);
+            let entry = known.remove(&path).unwrap();
+            let product_col = format!("{:<20}", entry.product);
+            let mfg_col = format!("{:<20}", entry.manufacturer);
+            println!(
+                "[{:>4}s] {}  {:<9}  {}  {}  {:<15}  {}",
+                secs,
+                "disconnected".red(),
+                entry.label,
+                product_col.as_str().blue(),
+                mfg_col.as_str().blue(),
+                entry.serial,
+                path.as_str().yellow(),
+            );
         }
     }
 }
